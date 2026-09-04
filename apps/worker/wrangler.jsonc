@@ -1,0 +1,28 @@
+{
+  "$schema": "node_modules/wrangler/config-schema.json",
+  "name": "engineering-knowledge-gardener-api",
+  "main": "src/index.ts",
+  "compatibility_date": "2026-09-03",
+  "observability": {
+    "enabled": true,
+  },
+  "vars": {
+    "APP_MODE": "demo",
+    "APP_ALLOWED_ORIGIN": "http://localhost:5173",
+  },
+  "d1_databases": [
+    {
+      "binding": "DB",
+      "database_name": "knowledge-gardener-demo-local",
+      "database_id": "00000000-0000-0000-0000-000000000000",
+      "migrations_dir": "migrations",
+    },
+  ],
+  "rules": [
+    {
+      "type": "Text",
+      "globs": ["**/*.md"],
+      "fallthrough": true,
+    },
+  ],
+}

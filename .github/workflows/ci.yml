@@ -1,0 +1,54 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  verify:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Install Node.js
+        uses: actions/setup-node@v6
+        with:
+          node-version: 26.8.1
+          package-manager-cache: false
+
+      # Node.js 26 no longer bundles Corepack. npm is used only to bootstrap the
+      # pinned Corepack release; Yarn remains the repository package manager.
+      - name: Install Corepack
+        run: npm install --global corepack@0.34.6
+
+      - name: Enable Corepack
+        run: corepack enable
+
+      - name: Verify toolchain
+        run: |
+          node --version
+          yarn --version
+
+      - name: Install dependencies
+        run: yarn install --immutable
+
+      - name: Check formatting
+        run: yarn format:check
+
+      - name: Lint
+        run: yarn lint
+
+      - name: Typecheck
+        run: yarn typecheck
+
+      - name: Test
+        run: yarn test
+
+      - name: Build
+        run: yarn build

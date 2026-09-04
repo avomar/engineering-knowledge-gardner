@@ -1,0 +1,35 @@
+{
+  "name": "engineering-knowledge-gardener",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "packageManager": "yarn@4.18.0",
+  "engines": {
+    "node": ">=26.8.1 <27"
+  },
+  "workspaces": [
+    "apps/*",
+    "packages/*"
+  ],
+  "scripts": {
+    "build": "yarn workspace @knowledge-gardener/web build && yarn workspace @knowledge-gardener/worker build",
+    "db:migrate:local": "yarn workspace @knowledge-gardener/worker db:migrate:local",
+    "dev": "concurrently --kill-others --names web,worker \"yarn dev:web\" \"yarn dev:worker\"",
+    "dev:web": "yarn workspace @knowledge-gardener/web dev",
+    "dev:worker": "yarn workspace @knowledge-gardener/worker dev",
+    "format": "prettier --write .",
+    "format:check": "prettier --check .",
+    "lint": "eslint .",
+    "test": "yarn workspaces foreach -Apt --exclude @knowledge-gardener/web run test",
+    "typecheck": "yarn workspaces foreach -Apt run typecheck"
+  },
+  "devDependencies": {
+    "@eslint/js": "^9.35.0",
+    "concurrently": "^9.2.1",
+    "eslint": "^9.35.0",
+    "globals": "^16.3.0",
+    "prettier": "^3.6.2",
+    "typescript": "^5.9.2",
+    "typescript-eslint": "^8.42.0"
+  }
+}

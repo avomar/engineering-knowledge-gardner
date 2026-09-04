@@ -1,0 +1,15 @@
+node_modules/
+.yarn/cache/
+.yarn/global/
+.yarn/install-state.gz
+.yarn/unplugged/
+dist/
+coverage/
+.wrangler/
+.dev.vars
+.env
+.env.*
+!.env.example
+*.log
+playwright-report/
+test-results/

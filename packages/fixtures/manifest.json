@@ -1,0 +1,54 @@
+{
+  "rootId": "engineering-knowledge",
+  "rootTitle": "Engineering Knowledge",
+  "documents": [
+    {
+      "sourcePageId": "connection-incident",
+      "title": "Connection Exhaustion Incident",
+      "sourceUrl": "demo://documents/connection-incident",
+      "parentSourcePageId": null,
+      "lastEditedAt": "2026-07-18T14:30:00.000Z",
+      "filename": "connection-incident.md",
+      "metadata": {
+        "status": "reviewed",
+        "tags": ["incident", "database", "reliability"]
+      }
+    },
+    {
+      "sourcePageId": "local-setup",
+      "title": "Local Development Setup",
+      "sourceUrl": "demo://documents/local-setup",
+      "parentSourcePageId": null,
+      "lastEditedAt": "2026-08-11T09:15:00.000Z",
+      "filename": "local-setup.md",
+      "metadata": {
+        "status": "current",
+        "tags": ["onboarding", "development"]
+      }
+    },
+    {
+      "sourcePageId": "storage-adr",
+      "title": "ADR: Storage Responsibilities",
+      "sourceUrl": "demo://documents/storage-adr",
+      "parentSourcePageId": null,
+      "lastEditedAt": "2026-06-03T10:00:00.000Z",
+      "filename": "storage-adr.md",
+      "metadata": {
+        "status": "accepted",
+        "tags": ["architecture", "storage"]
+      }
+    },
+    {
+      "sourcePageId": "worker-deploy-runbook",
+      "title": "Worker Deployment Runbook",
+      "sourceUrl": "demo://documents/worker-deploy-runbook",
+      "parentSourcePageId": null,
+      "lastEditedAt": "2026-08-29T16:45:00.000Z",
+      "filename": "worker-deploy-runbook.md",
+      "metadata": {
+        "status": "current",
+        "tags": ["runbook", "deployment", "rollback"]
+      }
+    }
+  ]
+}
