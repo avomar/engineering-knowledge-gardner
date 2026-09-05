@@ -25,3 +25,107 @@ This file records substantive prompts used while planning, designing, or coding 
 ## 6 — 2026-09-05 (Asia/Kolkata)
 
 > Commit this phase 0 implementation.
+
+## 7 — 2026-09-05 (Asia/Kolkata)
+
+> Phase 0 is implemented, now create a detailed plan for phase 1.
+
+## 8 — 2026-09-05 (Asia/Kolkata)
+
+> Implement the approved plan.
+
+## 9 — 2026-09-05 (Asia/Kolkata)
+
+> Why no ADR doc was created for phase 1?
+
+## 10 — 2026-09-05 (Asia/Kolkata)
+
+> Create the new adr doc.
+
+## 11 — 2026-09-05 (Asia/Kolkata)
+
+> Why is it necessary to add CLOUDFLARE_API_TOKEN after phase 1? Where to add it?
+
+## 12 — 2026-09-05 (Asia/Kolkata)
+
+> yarn cloudflare:login
+>
+> ⛅️ wrangler 4.129.0
+> ────────────────────
+> Attempting to login via OAuth...
+> Opening a link in your default browser: https://dash.cloudflare.com/oauth2/auth?response_type=code&client_id=54d11594-84e4-41aa-b438-e81b8fa78ee7&redirect_uri=http%3A%2F%2Flocalhost%3A8976%2Foauth%2Fcallback&scope=account%3Aread%20user%3Aread%20workers%3Awrite%20workers_kv%3Awrite%20workers_routes%3Awrite%20workers_scripts%3Awrite%20workers_tail%3Aread%20d1%3Awrite%20pages%3Awrite%20zone%3Aread%20ssl_certs%3Awrite%20ai%3Awrite%20ai-search%3Awrite%20ai-search%3Arun%20websearch.run%20agent-memory%3Awrite%20queues%3Awrite%20pipelines%3Awrite%20secrets_store%3Awrite%20artifacts%3Awrite%20flagship%3Awrite%20containers%3Awrite%20cloudchamber%3Awrite%20connectivity%3Aadmin%20email_routing%3Awrite%20email_sending%3Awrite%20browser%3Awrite%20challenge-widgets.write%20offline_access&state=9XMX2KEH_F96weZsYUimJOZOZvdM_xtk&code_challenge=olWHXXKsEBl-esp-041t-7GjIWww045cj1YGlrgMams&code_challenge_method=S256
+> Successfully logged in.
+> avomar@surf-local:~/personal/cloudflare-agent$ yarn run dev
+> [web]
+> [web] VITE v7.3.6 ready in 139 ms
+> [web]
+> [web] ➜ Local: http://localhost:5173/
+> [web] ➜ Network: http://192.168.42.129:5173/
+> [web] ➜ Network: http://192.168.226.100:5173/
+> [web] ➜ Network: http://172.18.0.1:5173/
+> [web] ➜ Network: http://172.19.0.1:5173/
+> [web] ➜ Network: http://172.20.0.1:5173/
+> [worker]
+> [worker] ⛅️ wrangler 4.129.0
+> [worker] ────────────────────
+> [worker] Your Worker has access to the following bindings:
+> [worker] Binding Resource Mode
+> [worker] env.DB (knowledge-gardener-demo-local) D1 Database local
+> [worker] env.AI AI remote
+> [worker] env.CHAT_RATE_LIMITER (5 requests/60s) Rate Limit local
+> [worker] env.APP_MODE ("demo") Environment Variable local
+> [worker] env.APP_ALLOWED_ORIGIN ("http://localhost:5173") Environment Variable local
+> [worker]
+> [worker] ⎎ Establishing remote connection...
+> [worker] ✘ [ERROR] You need to register a workers.dev subdomain before running the dev command in remote mode. You can either enable local mode by pressing l, or register a workers.dev subdomain here: https://dash.cloudflare.com/2ec7cb2e2c32f818af9e05e8f57dc15f/workers/onboarding
+> [worker]
+> [worker]
+> [worker]
+> [worker] ✘ [ERROR] Failed to start the remote proxy session. Error reloading remote server: A request to the Cloudflare API (/accounts/2ec7cb2e2c32f818af9e05e8f57dc15f/workers/subdomain/edge-preview) failed.
+> [worker]
+> [worker]
+> [worker] If you think this is a bug then please create an issue at https://github.com/cloudflare/workers-sdk/issues/new/choose
+> [worker] 🪵 Logs were written to "/home/avomar/.config/.wrangler/logs/wrangler-2026-09-05_10-24-09_069.log"
+> [worker] yarn dev:worker exited with code 1
+> --> Sending SIGTERM to other processes..
+> [web] yarn dev:web exited with code SIGTERM
+>
+> Debug issue.
+
+## 13 — 2026-09-05 (Asia/Kolkata)
+
+> I haven't created a worker yet on Cloudflare, give my step-by-step guidance.
+
+## 14 — 2026-09-05 (Asia/Kolkata)
+
+> [worker] [wrangler:info] GET /health 200 OK (23ms)
+> [worker] [wrangler:info] GET /health 200 OK (4ms)
+> [worker] [wrangler:info] OPTIONS /chat 204 No Content (23ms)
+> [worker] {"event":"chat.retrieval","requestId":"e72345c8-e0a8-4769-a324-b8184607b08e","resultCount":1}
+> [worker] ✘ [ERROR] e = kj/compat/tls.c++:82: failed: OpenSSL error; message = error:10000410:SSL routines:OPENSSL_internal:SSLV3_ALERT_HANDSHAKE_FAILURE
+> [worker]
+> [worker] error:1000009a:SSL routines:OPENSSL_internal:HANDSHAKE_FAILURE_ON_CLIENT_HELLO
+> [worker] stack: /home/avomar/personal/cloudflare-agent/node_modules/workerd/node_modules/@cloudflare/workerd-linux-64/bin/workerd@318d7c0 /home/avomar/personal/cloudflare-agent/node_modules/workerd/node_modules/@cloudflare/workerd-linux-64/bin/workerd@3195880 /home/avomar/personal/cloudflare-agent/node_modules/workerd/node_modules/@cloudflare/workerd-linux-64/bin/workerd@5a0f7d0 /home/avomar/personal/cloudflare-agent/node_modules/workerd/node_modules/@cloudflare/workerd-linux-64/bin/workerd@5a0fa80 /home/avomar/personal/cloudflare-agent/node_modules/workerd/node_modules/@cloudflare/workerd-linux-64/bin/workerd@5a14d67 /home/avomar/personal/cloudflare-agent/node_modules/workerd/node_modules/@cloudflare/workerd-linux-64/bin/workerd@5879297 /home/avomar/personal/cloudflare-agent/node_modules/workerd/node_modules/@cloudflare/workerd-linux-64/bin/workerd@5879fad /home/avomar/personal/cloudflare-agent/node_modules/workerd/node_modules/@cloudflare/workerd-linux-64/bin/workerd@587cf24 /home/avomar/personal/cloudflare-agent/node_modules/workerd/node_modules/@cloudflare/workerd-linux-64/bin/workerd@5858b80 /home/avomar/personal/cloudflare-agent/node_modules/workerd/node_modules/@cloudflare/workerd-linux-64/bin/workerd@585ef90 /home/avomar/personal/cloudflare-agent/node_modules/workerd/node_modules/@cloudflare/workerd-linux-64/bin/workerd@58764b0 /home/avomar/personal/cloudflare-agent/node_modules/workerd/node_modules/@cloudflare/workerd-linux-64/bin/workerd@2416b30 /home/avomar/personal/cloudflare-agent/node_modules/workerd/node_modules/@cloudflare/workerd-linux-64/bin/workerd@347c140; sentryErrorContext = jsgInternalError; wdErrId = o6r4ghe8l4lm2ud0f473cqm0
+> [worker]
+> [worker]
+>
+> Debug this error.
+
+## 15 — 2026-09-05 (Asia/Kolkata)
+
+> Fix the response handling.
+
+## 16 — 2026-09-05 (Asia/Kolkata)
+
+> Continue
+
+## 17 — 2026-09-05 (Asia/Kolkata)
+
+> [worker] {"event":"chat.retrieval","requestId":"75104ddb-8ff7-431d-a281-8e5b0ab85ba1","resultCount":1}
+> [worker] {"event":"ai.completed","model":"@cf/meta/llama-3.3-70b-instruct-fp8-fast","usage":{"prompt_tokens":388,"completion_tokens":63,"total_tokens":451,"prompt_tokens_details":{"cached_tokens":0},"neurons":23.24979019165039}}
+> [worker] {"event":"chat.failed","requestId":"75104ddb-8ff7-431d-a281-8e5b0ab85ba1","code":"invalid_ai_response","durationMs":3321}
+> [worker] [wrangler:info] POST /chat 502 Bad Gateway (3330ms)
+
+## 18 — 2026-09-05 (Asia/Kolkata)
+
+> Commit phase 1.

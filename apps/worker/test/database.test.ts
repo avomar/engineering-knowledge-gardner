@@ -27,12 +27,13 @@ beforeAll(async () => {
     script: "export default { fetch: () => new Response('ok') }",
   });
   database = await miniflare.getD1Database("DB");
-  const migration = await readFile(
-    path.join(directory, "../migrations/0001_initial.sql"),
-    "utf8",
+  const migrations = await Promise.all(
+    ["0001_initial.sql", "0002_chat_answer_metadata.sql"].map((filename) =>
+      readFile(path.join(directory, "../migrations", filename), "utf8"),
+    ),
   );
-  const statements = migration
-    .split(";")
+  const statements = migrations
+    .flatMap((migration) => migration.split(";"))
     .map((statement) => statement.trim())
     .filter(
       (statement) =>
@@ -81,6 +82,15 @@ describe("D1 foundation", () => {
         "messages_conversation_created_idx",
         "sync_runs_knowledge_space_started_idx",
       ]),
+    );
+  });
+
+  it("adds grounded answer metadata to messages", async () => {
+    const columns = await database
+      .prepare("PRAGMA table_info(messages)")
+      .all<{ name: string }>();
+    expect(columns.results.map(({ name }) => name)).toEqual(
+      expect.arrayContaining(["confidence", "unanswered_questions_json"]),
     );
   });
 

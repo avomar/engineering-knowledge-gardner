@@ -16,6 +16,10 @@ beforeAll(async () => {
   });
   environment = {
     DB: await miniflare.getD1Database("DB"),
+    AI: {} as Ai,
+    CHAT_RATE_LIMITER: {
+      limit: async () => ({ success: true }),
+    } as RateLimit,
     APP_ALLOWED_ORIGIN: "http://localhost:5173",
     APP_MODE: "demo",
   };

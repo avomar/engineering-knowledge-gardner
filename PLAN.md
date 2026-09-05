@@ -267,16 +267,17 @@ The LLM only turns a signal plus source evidence into a cautious, prioritized re
 
 ### Worker endpoints
 
-| Endpoint                   | Behavior                                                           |
-| -------------------------- | ------------------------------------------------------------------ |
-| `GET /health`              | Service and dependency readiness without secrets or source content |
-| `POST /sync`               | Start/reuse a manual sync workflow                                 |
-| `GET /sync/:runId`         | Sync status and non-sensitive counts/errors                        |
-| `POST /chat`               | Grounded answer for a question and conversation ID                 |
-| `GET /documents/search`    | Keyword/title source search with pagination                        |
-| `POST /drafts`             | Generate a pending draft from a request and retrieved sources      |
-| `POST /drafts/:id/publish` | Publish a user-approved draft to the fixed Notion parent           |
-| `POST /feedback`           | Save answer/draft quality feedback                                 |
+| Endpoint                          | Behavior                                                           |
+| --------------------------------- | ------------------------------------------------------------------ |
+| `GET /health`                     | Service and dependency readiness without secrets or source content |
+| `POST /sync`                      | Start/reuse a manual sync workflow                                 |
+| `GET /sync/:runId`                | Sync status and non-sensitive counts/errors                        |
+| `POST /chat`                      | Grounded answer for a question and conversation ID                 |
+| `GET /conversations/:id/messages` | Restore the active conversation for its demo browser session       |
+| `GET /documents/search`           | Keyword/title source search with pagination                        |
+| `POST /drafts`                    | Generate a pending draft from a request and retrieved sources      |
+| `POST /drafts/:id/publish`        | Publish a user-approved draft to the fixed Notion parent           |
+| `POST /feedback`                  | Save answer/draft quality feedback                                 |
 
 ### Pages views
 
@@ -305,7 +306,7 @@ The LLM only turns a signal plus source evidence into a cautious, prioritized re
 - CORS only allows `APP_ALLOWED_ORIGIN`.
 - Public demo data consists solely of fictional fixtures.
 - Personal Notion content, tokens, screenshots, test fixtures, logs, and prompt history must never be committed.
-- Citation content is displayed only in the authenticated live environment.
+- Live citation content is displayed only in the authenticated live environment; the public demo displays excerpts only from controlled fictional fixtures.
 - Provide owner controls to clear chat history and delete indexed data for the configured knowledge space.
 - Store operational metadata and errors without full document bodies.
 - Treat retrieved Notion content as untrusted data. The model instruction explicitly ignores commands found inside source pages and uses source pages only as evidence.

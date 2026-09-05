@@ -1,11 +1,15 @@
 import { describe, expect, it } from "vitest";
 
 import {
+  apiErrorResponseSchema,
   appModeSchema,
+  chatRequestSchema,
+  groundedAnswerSchema,
   feedbackSchema,
   healthResponseSchema,
   indexStatusSchema,
   isoDateTimeSchema,
+  messageSchema,
   messageRoleSchema,
 } from "../src/index";
 
@@ -65,5 +69,66 @@ describe("domain schemas", () => {
         draftId: null,
       }).success,
     ).toBe(false);
+  });
+
+  it("enforces the grounded chat limits", () => {
+    expect(
+      chatRequestSchema.safeParse({ question: "x".repeat(2_001) }).success,
+    ).toBe(false);
+    expect(
+      groundedAnswerSchema.safeParse({
+        answer: "D1 stores structured data.",
+        confidence: "high",
+        citations: [{ chunkId: firstId, quote: "structured data" }],
+        unansweredQuestions: [],
+      }).success,
+    ).toBe(true);
+    expect(
+      groundedAnswerSchema.safeParse({
+        answer: "Unsupported",
+        confidence: "certain",
+        citations: [],
+        unansweredQuestions: [],
+      }).success,
+    ).toBe(false);
+  });
+
+  it("validates safe API errors", () => {
+    expect(
+      apiErrorResponseSchema.parse({
+        error: {
+          code: "rate_limited",
+          message: "Try later.",
+          retryable: true,
+        },
+      }),
+    ).toMatchObject({ error: { code: "rate_limited" } });
+  });
+
+  it("keeps user-only and assistant-only message metadata separate", () => {
+    const base = {
+      id: firstId,
+      conversationId: secondId,
+      content: "Message",
+      createdAt: "2026-09-05T00:00:00.000Z",
+    };
+    expect(
+      messageSchema.safeParse({
+        ...base,
+        role: "user",
+        citations: [],
+        confidence: "high",
+        unansweredQuestions: [],
+      }).success,
+    ).toBe(false);
+    expect(
+      messageSchema.safeParse({
+        ...base,
+        role: "assistant",
+        citations: [],
+        confidence: "low",
+        unansweredQuestions: ["What remains unknown?"],
+      }).success,
+    ).toBe(true);
   });
 });
