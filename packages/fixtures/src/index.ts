@@ -82,6 +82,8 @@ function toReference(
     sourceUrl: document.sourceUrl,
     parentSourcePageId: document.parentSourcePageId,
     lastEditedAt: document.lastEditedAt,
+    breadcrumb: [fixtureManifest.rootTitle, document.title],
+    metadata: document.metadata as Record<string, JsonValue>,
   };
 }
 
@@ -132,8 +134,6 @@ export class FixtureSourceAdapter implements SourceAdapter {
 
     return sourceDocumentSchema.parse({
       ...toReference(metadata),
-      breadcrumb: [fixtureManifest.rootTitle, metadata.title],
-      metadata: metadata.metadata as Record<string, JsonValue>,
       contentMarkdown,
     });
   }

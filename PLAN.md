@@ -34,20 +34,19 @@ The product delivers three outcomes:
 
 ## Chosen stack
 
-| Layer                  | Choice                                                                                       |
-| ---------------------- | -------------------------------------------------------------------------------------------- |
-| Package management     | Yarn 4 workspace, pinned with Corepack and committed `yarn.lock`                             |
-| Language               | TypeScript with strict compiler settings                                                     |
-| Web UI                 | React, Vite, Tailwind CSS, deployed to Cloudflare Pages                                      |
-| API                    | Separate Cloudflare Worker using Hono and Zod                                                |
-| Notion integration     | Small native REST client around Worker `fetch`; no Notion SDK dependency                     |
-| Answer and draft model | Workers AI: `@cf/meta/llama-3.3-70b-instruct-fp8-fast`                                       |
-| Embedding model        | Workers AI: `@cf/baai/bge-small-en-v1.5` with a 384-dimension Vectorize index                |
-| Operational state      | Cloudflare D1                                                                                |
-| Semantic retrieval     | Cloudflare Vectorize                                                                         |
-| Long-running sync      | Cloudflare Workflows                                                                         |
-| Tests                  | Vitest + Miniflare, Playwright                                                               |
-| CI                     | GitHub Actions: Corepack/Yarn install, format/lint, typecheck, unit/integration tests, build |
+| Layer                  | Choice                                                                                          |
+| ---------------------- | ----------------------------------------------------------------------------------------------- |
+| Package management     | Yarn 4 workspace, pinned with Corepack and committed `yarn.lock`                                |
+| Language               | TypeScript with strict compiler settings                                                        |
+| Web UI and API         | React, Vite, Tailwind CSS static assets and Hono API deployed together on one Cloudflare Worker |
+| Notion integration     | Small native REST client around Worker `fetch`; no Notion SDK dependency                        |
+| Answer and draft model | Workers AI: `@cf/meta/llama-3.3-70b-instruct-fp8-fast`                                          |
+| Embedding model        | Workers AI: `@cf/baai/bge-small-en-v1.5` with a 384-dimension Vectorize index                   |
+| Operational state      | Cloudflare D1                                                                                   |
+| Semantic retrieval     | Cloudflare Vectorize                                                                            |
+| Long-running sync      | Cloudflare Workflows                                                                            |
+| Tests                  | Vitest + Miniflare, Playwright                                                                  |
+| CI                     | GitHub Actions: Corepack/Yarn install, format/lint, typecheck, unit/integration tests, build    |
 
 ### Toolchain constraints
 
@@ -61,8 +60,9 @@ The product delivers three outcomes:
 
 ```mermaid
 flowchart TD
-    U[Owner] --> P[Cloudflare Pages UI]
-    P --> API[Worker API]
+    U[Owner] --> W[Cloudflare Worker]
+    W --> P[React static assets]
+    W --> API[Hono /api API]
 
     API --> DB[(D1)]
     API --> AI[Workers AI]
@@ -99,7 +99,6 @@ The browser never receives the Notion token. Demo and live data must not share d
 | `NOTION_TOKEN`            | Worker secret for the internal Notion connection |
 | `NOTION_ROOT_PAGE_ID`     | Configured allowed Notion knowledge root         |
 | `NOTION_DRAFTS_PARENT_ID` | Fixed parent for assistant-created pages         |
-| `APP_ALLOWED_ORIGIN`      | Allowed Pages origin for CORS                    |
 | `APP_MODE`                | `demo` or `live`                                 |
 
 ## Notion integration design
@@ -108,26 +107,28 @@ The browser never receives the Notion token. Demo and live data must not share d
 2. Share only the selected Engineering Knowledge root with that connection.
 3. Configure `AI Drafts` as the only writable parent.
 4. Read pages and nested blocks recursively, with pagination.
-5. Track Notion `last_edited_time` and a normalized-content checksum in D1.
-6. Use Notion search only for discovery; do not treat it as full-text knowledge retrieval.
-7. Respect the documented average limit of three requests per second per connection.
-8. On `429` or `529`, honor `Retry-After`, apply exponential backoff with jitter, limit retries, and surface documents that could not be synchronized.
+5. Traverse child databases and their data sources so database rows beneath the root are included as pages.
+6. Track Notion `last_edited_time` and a normalized-content checksum in D1.
+7. Do not use Notion Search for exhaustive discovery; traversal starts at the configured root and never follows content links.
+8. Respect the documented average limit of three requests per second per connection.
+9. On rate limits or transient failures, honor `Retry-After`, apply exponential backoff with jitter, limit retries, and surface documents that could not be synchronized.
 
 Writes require an idempotency key stored in D1. A repeated publish request must return the original Notion page result rather than create a duplicate page.
 
 ## Persistent data model
 
-| Table              | Key fields and indexes                                                                                                                                                                                                       |
-| ------------------ | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `knowledge_spaces` | `id`, `name`, `source_type`, `source_root_id`, `mode`, `last_successful_sync_at`; unique source type and root ID                                                                                                             |
-| `documents`        | `id`, `knowledge_space_id`, `source_page_id`, `title`, `source_url`, `parent_source_page_id`, `last_edited_at`, `checksum`, `index_status`; unique `(knowledge_space_id, source_page_id)`, indexes on status and last edited |
-| `document_chunks`  | `id`, `document_id`, `ordinal`, `content`, `token_count`, `checksum`; unique `(document_id, ordinal)`                                                                                                                        |
-| `sync_runs`        | `id`, `knowledge_space_id`, `status`, start/end times, discovered/indexed/skipped/failed counts, error summary; index by knowledge space and start time                                                                      |
-| `conversations`    | `id`, `knowledge_space_id`, `owner_session_id`, timestamps; index by session                                                                                                                                                 |
-| `messages`         | `id`, `conversation_id`, `role`, `content`, `citation_json`, `created_at`; index by conversation and creation time                                                                                                           |
-| `drafts`           | `id`, `knowledge_space_id`, `title`, `content_markdown`, `source_json`, `assumptions_json`, `target_parent_id`, `status`, `idempotency_key`, `notion_page_id`, timestamps; unique idempotency key                            |
-| `audit_events`     | `id`, action, resource ID, outcome, non-sensitive metadata, timestamp; index by resource and time                                                                                                                            |
-| `feedback`         | `id`, message/draft ID, rating, correction, timestamp                                                                                                                                                                        |
+| Table                | Key fields and indexes                                                                                                                                                                                                                                     |
+| -------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `knowledge_spaces`   | `id`, `name`, `source_type`, `source_root_id`, `mode`, `last_successful_sync_at`; unique source type and root ID                                                                                                                                           |
+| `documents`          | `id`, `knowledge_space_id`, `source_page_id`, `title`, `source_url`, `parent_source_page_id`, `metadata_json`, `last_edited_at`, `checksum`, `index_status`, sync errors; unique `(knowledge_space_id, source_page_id)`, indexes on status and last edited |
+| `document_chunks`    | `id`, `document_id`, `ordinal`, `content`, `token_count`, `checksum`; unique `(document_id, ordinal)`                                                                                                                                                      |
+| `sync_runs`          | `id`, `knowledge_space_id`, `status`, start/end times, discovered/indexed/skipped/failed counts, error summary; index by knowledge space and start time                                                                                                    |
+| `sync_run_documents` | Per-run source outcome and safe error metadata used by the freshness UI                                                                                                                                                                                    |
+| `conversations`      | `id`, `knowledge_space_id`, `owner_session_id`, timestamps; index by session                                                                                                                                                                               |
+| `messages`           | `id`, `conversation_id`, `role`, `content`, `citation_json`, `created_at`; index by conversation and creation time                                                                                                                                         |
+| `drafts`             | `id`, `knowledge_space_id`, `title`, `content_markdown`, `source_json`, `assumptions_json`, `target_parent_id`, `status`, `idempotency_key`, `notion_page_id`, timestamps; unique idempotency key                                                          |
+| `audit_events`       | `id`, action, resource ID, outcome, non-sensitive metadata, timestamp; index by resource and time                                                                                                                                                          |
+| `feedback`           | `id`, message/draft ID, rating, correction, timestamp                                                                                                                                                                                                      |
 
 Vectorize metadata contains `knowledgeSpaceId`, `documentId`, `chunkId`, and the document's edit timestamp. Raw chunk text remains in D1.
 
@@ -267,17 +268,18 @@ The LLM only turns a signal plus source evidence into a cautious, prioritized re
 
 ### Worker endpoints
 
-| Endpoint                          | Behavior                                                           |
-| --------------------------------- | ------------------------------------------------------------------ |
-| `GET /health`                     | Service and dependency readiness without secrets or source content |
-| `POST /sync`                      | Start/reuse a manual sync workflow                                 |
-| `GET /sync/:runId`                | Sync status and non-sensitive counts/errors                        |
-| `POST /chat`                      | Grounded answer for a question and conversation ID                 |
-| `GET /conversations/:id/messages` | Restore the active conversation for its demo browser session       |
-| `GET /documents/search`           | Keyword/title source search with pagination                        |
-| `POST /drafts`                    | Generate a pending draft from a request and retrieved sources      |
-| `POST /drafts/:id/publish`        | Publish a user-approved draft to the fixed Notion parent           |
-| `POST /feedback`                  | Save answer/draft quality feedback                                 |
+| Endpoint                              | Behavior                                                           |
+| ------------------------------------- | ------------------------------------------------------------------ |
+| `GET /api/health`                     | Service and dependency readiness without secrets or source content |
+| `POST /api/sync`                      | Start/reuse a manual sync workflow                                 |
+| `GET /api/sync`                       | Knowledge-space freshness and recent sync runs                     |
+| `GET /api/sync/:runId`                | Sync status and non-sensitive counts/errors                        |
+| `POST /api/chat`                      | Grounded answer for a question and conversation ID                 |
+| `GET /api/conversations/:id/messages` | Restore the active conversation for its demo browser session       |
+| `GET /api/documents/search`           | Keyword/title source search with pagination                        |
+| `POST /drafts`                        | Generate a pending draft from a request and retrieved sources      |
+| `POST /drafts/:id/publish`            | Publish a user-approved draft to the fixed Notion parent           |
+| `POST /feedback`                      | Save answer/draft quality feedback                                 |
 
 ### Pages views
 
@@ -303,7 +305,7 @@ The LLM only turns a signal plus source evidence into a cautious, prioritized re
 - The Notion connection is restricted to the selected Engineering Knowledge root.
 - Notion credentials exist only as Worker secrets.
 - Live deployment is protected by Cloudflare Access.
-- CORS only allows `APP_ALLOWED_ORIGIN`.
+- The SPA and API share one Worker origin; there is no browser-facing CORS configuration.
 - Public demo data consists solely of fictional fixtures.
 - Personal Notion content, tokens, screenshots, test fixtures, logs, and prompt history must never be committed.
 - Live citation content is displayed only in the authenticated live environment; the public demo displays excerpts only from controlled fictional fixtures.
@@ -392,19 +394,19 @@ The UI exposes run status and actionable errors; the repository documents where 
 - D1 schema and typed domain models exist.
 - `PROMPT_HISTORY.md`, `PLAN.md`, and initial README outline exist.
 - Node `26.8.1`, Corepack, and Yarn `4.18.0` install successfully from a clean checkout.
-- `yarn dev:worker` runs Wrangler locally, and `yarn build` produces the Pages frontend build.
+- `yarn dev:worker` runs Wrangler locally, and `yarn build` produces the Worker static-asset bundle.
 - Lint, typecheck, unit-test, and build commands run in CI through Yarn.
 
 ### Phase 1 — Demo-mode grounded chat
 
-**Deliverable:** Pages chat UI, Worker API, Workers AI answer path, D1 conversation/message persistence, and fictional source citations.
+**Deliverable:** Vite chat UI, Worker API, Workers AI answer path, D1 conversation/message persistence, and fictional source citations.
 
 **Acceptance criteria:**
 
 - A user asks a question and sees an answer, confidence, and valid source cards.
 - The four fixture evaluation questions pass, including the unanswerable case.
 - Chat history persists across a browser refresh in demo mode.
-- This provides the minimum assignment core: LLM, Worker coordination, Pages chat input, and D1 state.
+- This provides the minimum assignment core: LLM, Worker coordination, browser chat input, and D1 state.
 
 ### Phase 2 — Live Notion read and workflow sync
 
@@ -416,6 +418,17 @@ The UI exposes run status and actionable errors; the repository documents where 
 - Changed pages are re-indexed; unchanged pages are skipped.
 - Pagination, nested blocks, retries, and partial failures are tested.
 - The UI shows sync status, source freshness, and failed documents.
+
+### Phase 2-a — Unified SPA and API deployment
+
+**Deliverable:** The existing Vite SPA is deployed as Workers Static Assets with the existing API under `/api/*`, forming one Access-ready Worker origin.
+
+**Acceptance criteria:**
+
+- The deployed Worker serves SPA navigation/static assets and JSON API responses without routing ambiguity.
+- Local Vite development proxies the same relative `/api/*` contract.
+- The live D1, AI, rate-limit, and Workflow bindings remain unchanged.
+- The live Worker can be protected by one Cloudflare Access policy without cross-origin browser authentication.
 
 ### Phase 3 — Hybrid semantic retrieval and evaluation integrity
 
@@ -470,4 +483,4 @@ The UI exposes run status and actionable errors; the repository documents where 
 - [ ] Demo environment uses only fictional data.
 - [ ] Live environment is Access-protected and Notion-scoped.
 - [ ] Evaluation fixtures and test commands are documented and runnable.
-- [ ] Deployed Pages demo URL and GitHub repository URL are ready for the application form.
+- [ ] Deployed Worker demo URL and GitHub repository URL are ready for the application form.

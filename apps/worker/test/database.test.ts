@@ -28,7 +28,11 @@ beforeAll(async () => {
   });
   database = await miniflare.getD1Database("DB");
   const migrations = await Promise.all(
-    ["0001_initial.sql", "0002_chat_answer_metadata.sql"].map((filename) =>
+    [
+      "0001_initial.sql",
+      "0002_chat_answer_metadata.sql",
+      "0003_live_notion_sync.sql",
+    ].map((filename) =>
       readFile(path.join(directory, "../migrations", filename), "utf8"),
     ),
   );
@@ -94,6 +98,25 @@ describe("D1 foundation", () => {
     );
   });
 
+  it("adds live synchronization state", async () => {
+    const documentColumns = await database
+      .prepare("PRAGMA table_info(documents)")
+      .all<{ name: string }>();
+    expect(documentColumns.results.map(({ name }) => name)).toEqual(
+      expect.arrayContaining([
+        "metadata_json",
+        "last_sync_error_code",
+        "last_sync_error_message",
+      ]),
+    );
+    const tables = await database
+      .prepare("SELECT name FROM sqlite_master WHERE type = 'table'")
+      .all<{ name: string }>();
+    expect(tables.results.map(({ name }) => name)).toContain(
+      "sync_run_documents",
+    );
+  });
+
   it("round-trips the Phase 0 repository aggregates", async () => {
     const spaces = new KnowledgeSpaceRepository(database);
     const documents = new DocumentRepository(database);
@@ -121,6 +144,9 @@ describe("D1 foundation", () => {
       checksum: "document-checksum",
       indexStatus: "pending",
       lastSyncedAt: null,
+      metadata: {},
+      lastSyncErrorCode: null,
+      lastSyncErrorMessage: null,
       createdAt: now,
       updatedAt: now,
     });

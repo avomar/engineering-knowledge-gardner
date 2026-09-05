@@ -1,6 +1,8 @@
 import { Miniflare } from "miniflare";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 
+import { apiErrorResponseSchema } from "@knowledge-gardener/domain";
+
 import type { Env } from "../src/env";
 import { app } from "../src/index";
 
@@ -20,7 +22,6 @@ beforeAll(async () => {
     CHAT_RATE_LIMITER: {
       limit: async () => ({ success: true }),
     } as RateLimit,
-    APP_ALLOWED_ORIGIN: "http://localhost:5173",
     APP_MODE: "demo",
   };
 });
@@ -38,31 +39,19 @@ async function request(url: string, origin?: string): Promise<Response> {
 }
 
 describe("GET /health", () => {
-  it("reports D1 readiness without internal details", async () => {
+  it("reports D1 readiness without internal details or CORS headers", async () => {
     const response = await request(
-      "https://api.example.invalid/health",
-      environment.APP_ALLOWED_ORIGIN,
-    );
-
-    expect(response.status).toBe(200);
-    expect(response.headers.get("Access-Control-Allow-Origin")).toBe(
-      environment.APP_ALLOWED_ORIGIN,
-    );
-    expect(await response.json()).toEqual({
-      status: "ok",
-      mode: "demo",
-      checks: { database: "ok" },
-    });
-  });
-
-  it("does not grant CORS to another origin", async () => {
-    const response = await request(
-      "https://api.example.invalid/health",
+      "https://api.example.invalid/api/health",
       "https://untrusted.example.invalid",
     );
 
     expect(response.status).toBe(200);
     expect(response.headers.get("Access-Control-Allow-Origin")).toBeNull();
+    expect(await response.json()).toEqual({
+      status: "ok",
+      mode: "demo",
+      checks: { database: "ok", sourceConfiguration: "not_applicable" },
+    });
   });
 
   it("fails closed when the database check throws", async () => {
@@ -75,7 +64,7 @@ describe("GET /health", () => {
       } as unknown as D1Database,
     };
     const response = await app.request(
-      "https://api.example.invalid/health",
+      "https://api.example.invalid/api/health",
       {},
       failingEnvironment,
     );
@@ -85,8 +74,20 @@ describe("GET /health", () => {
     expect(JSON.parse(body)).toEqual({
       status: "degraded",
       mode: "demo",
-      checks: { database: "error" },
+      checks: { database: "error", sourceConfiguration: "not_applicable" },
     });
     expect(body).not.toContain("sensitive database detail");
+  });
+
+  it("returns the API JSON error contract for an unknown API route", async () => {
+    const response = await request(
+      "https://api.example.invalid/api/not-a-route",
+    );
+
+    expect(response.status).toBe(404);
+    expect(response.headers.get("content-type")).toContain("application/json");
+    expect(apiErrorResponseSchema.parse(await response.json()).error.code).toBe(
+      "not_found",
+    );
   });
 });

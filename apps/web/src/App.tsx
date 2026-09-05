@@ -2,10 +2,18 @@ import {
   apiErrorResponseSchema,
   chatResponseSchema,
   conversationMessagesResponseSchema,
+  documentSearchResponseSchema,
   healthResponseSchema,
   idSchema,
+  syncDetailResponseSchema,
+  syncOverviewResponseSchema,
+  syncStartResponseSchema,
   type ChatMessage,
+  type DocumentSearchItem,
   type HealthResponse,
+  type SyncOverviewResponse,
+  type SyncRun,
+  type SyncRunDocument,
 } from "@knowledge-gardener/domain";
 import {
   type FormEvent,
@@ -21,9 +29,7 @@ type HealthState =
   | { kind: "ready"; response: HealthResponse }
   | { kind: "error"; message: string };
 
-const apiBaseUrl = (
-  import.meta.env.VITE_API_BASE_URL ?? "http://localhost:8787"
-).replace(/\/$/u, "");
+const apiBaseUrl = "/api";
 const sessionStorageKey = "knowledge-gardener.demo-session-id";
 const conversationStorageKey = "knowledge-gardener.active-conversation-id";
 const maximumQuestionLength = 2_000;
@@ -200,6 +206,16 @@ export function App() {
   const readyToSend =
     question.trim().length > 0 && remaining >= 0 && !sending && !restoring;
 
+  if (health.kind === "ready" && health.response.mode === "live") {
+    return (
+      <LiveWorkspace
+        configured={health.response.checks.sourceConfiguration === "ok"}
+        health={health}
+        retryHealth={() => void checkHealth()}
+      />
+    );
+  }
+
   return (
     <main className="min-h-screen bg-[#0b0d0c] text-stone-100">
       <div className="mx-auto flex min-h-screen max-w-6xl flex-col px-4 sm:px-7">
@@ -324,6 +340,474 @@ export function App() {
       </div>
     </main>
   );
+}
+
+type LiveView = "sync" | "sources";
+
+function LiveWorkspace({
+  configured,
+  health,
+  retryHealth,
+}: {
+  configured: boolean;
+  health: HealthState;
+  retryHealth: () => void;
+}) {
+  const [view, setView] = useState<LiveView>("sync");
+  const [overview, setOverview] = useState<SyncOverviewResponse | null>(null);
+  const [detail, setDetail] = useState<SyncRunDocument[]>([]);
+  const [loading, setLoading] = useState(true);
+  const [starting, setStarting] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+
+  const loadOverview = useCallback(async () => {
+    try {
+      const response = await fetch(`${apiBaseUrl}/sync`);
+      const raw: unknown = await response.json();
+      if (!response.ok)
+        throw apiFailure(raw, "Synchronization status is unavailable.");
+      const next = syncOverviewResponseSchema.parse(raw);
+      setOverview(next);
+      const active = next.runs.find((run) => isActive(run));
+      if (active !== undefined) {
+        const detailResponse = await fetch(`${apiBaseUrl}/sync/${active.id}`);
+        if (detailResponse.ok) {
+          const detailBody = syncDetailResponseSchema.parse(
+            await detailResponse.json(),
+          );
+          setDetail(detailBody.documents);
+        }
+      } else if (next.runs[0] !== undefined) {
+        const detailResponse = await fetch(
+          `${apiBaseUrl}/sync/${next.runs[0].id}`,
+        );
+        if (detailResponse.ok) {
+          const detailBody = syncDetailResponseSchema.parse(
+            await detailResponse.json(),
+          );
+          setDetail(detailBody.documents);
+        }
+      }
+      setError(null);
+    } catch (caught) {
+      setError(messageFrom(caught, "Synchronization status is unavailable."));
+    } finally {
+      setLoading(false);
+    }
+  }, []);
+
+  useEffect(() => {
+    void loadOverview();
+  }, [loadOverview]);
+
+  const activeRun = overview?.runs.find((run) => isActive(run));
+  useEffect(() => {
+    if (activeRun === undefined) return;
+    const timer = window.setInterval(() => void loadOverview(), 2_000);
+    return () => window.clearInterval(timer);
+  }, [activeRun?.id, loadOverview]);
+
+  async function startSync() {
+    if (!configured || starting || activeRun !== undefined) return;
+    setStarting(true);
+    setError(null);
+    try {
+      const response = await fetch(`${apiBaseUrl}/sync`, { method: "POST" });
+      const raw: unknown = await response.json();
+      if (!response.ok)
+        throw apiFailure(raw, "Synchronization could not be started.");
+      syncStartResponseSchema.parse(raw);
+      await loadOverview();
+    } catch (caught) {
+      setError(messageFrom(caught, "Synchronization could not be started."));
+    } finally {
+      setStarting(false);
+    }
+  }
+
+  return (
+    <main className="min-h-screen bg-[#0b0d0c] text-stone-100">
+      <div className="mx-auto min-h-screen max-w-6xl px-4 sm:px-7">
+        <header className="flex flex-wrap items-center justify-between gap-4 border-b border-white/10 py-4">
+          <div className="flex items-center gap-3">
+            <span className="grid size-9 place-items-center rounded-xl bg-emerald-300 text-sm font-black text-emerald-950">
+              KG
+            </span>
+            <div>
+              <p className="text-sm font-semibold">
+                Engineering Knowledge Gardener
+              </p>
+              <p className="text-xs text-stone-500">
+                Private Notion source · read only
+              </p>
+            </div>
+          </div>
+          <HealthBadge health={health} retry={retryHealth} />
+        </header>
+        <div className="grid gap-8 py-7 lg:grid-cols-[14rem_minmax(0,1fr)]">
+          <nav aria-label="Live workspace" className="space-y-2">
+            {(["sync", "sources"] as const).map((item) => (
+              <button
+                className={`w-full rounded-xl px-4 py-3 text-left text-sm font-semibold capitalize ${view === item ? "bg-emerald-300 text-emerald-950" : "text-stone-400 hover:bg-white/5 hover:text-white"}`}
+                key={item}
+                onClick={() => setView(item)}
+                type="button"
+              >
+                {item}
+              </button>
+            ))}
+            <div className="mt-6 border-t border-white/10 pt-5 text-xs leading-5 text-stone-600">
+              Live chat becomes available after Phase 3 hybrid retrieval.
+            </div>
+          </nav>
+          <section className="min-w-0">
+            {!configured ? (
+              <Notice title="Notion is not configured">
+                Add the token and root page ID to the ignored live variables
+                file, migrate the live database, and restart the Worker.
+              </Notice>
+            ) : view === "sync" ? (
+              <SyncView
+                detail={detail}
+                error={error}
+                loading={loading}
+                onStart={() => void startSync()}
+                overview={overview}
+                starting={starting}
+              />
+            ) : (
+              <SourcesView />
+            )}
+          </section>
+        </div>
+      </div>
+    </main>
+  );
+}
+
+function SyncView({
+  detail,
+  error,
+  loading,
+  onStart,
+  overview,
+  starting,
+}: {
+  detail: SyncRunDocument[];
+  error: string | null;
+  loading: boolean;
+  onStart: () => void;
+  overview: SyncOverviewResponse | null;
+  starting: boolean;
+}) {
+  const run = overview?.runs[0];
+  const active = run !== undefined && isActive(run);
+  return (
+    <div>
+      <div className="flex flex-wrap items-end justify-between gap-5">
+        <div>
+          <p className="font-mono text-xs uppercase tracking-[0.2em] text-emerald-300">
+            Knowledge synchronization
+          </p>
+          <h1 className="mt-3 text-3xl font-semibold tracking-tight">
+            Keep the source garden current.
+          </h1>
+          <p className="mt-3 max-w-2xl leading-7 text-stone-400">
+            Reads only the configured Notion root, its child pages, and
+            descendant database rows.
+          </p>
+        </div>
+        <button
+          className="rounded-xl bg-emerald-300 px-5 py-3 text-sm font-bold text-emerald-950 disabled:cursor-not-allowed disabled:opacity-40"
+          disabled={starting || active}
+          onClick={onStart}
+          type="button"
+        >
+          {starting ? "Starting…" : active ? "Sync in progress" : "Start sync"}
+        </button>
+      </div>
+      {error === null ? null : (
+        <div
+          className="mt-6 rounded-xl bg-rose-400/10 px-4 py-3 text-sm text-rose-200"
+          role="alert"
+        >
+          {error}
+        </div>
+      )}
+      {loading ? (
+        <StatusMessage>Loading synchronization status…</StatusMessage>
+      ) : run === undefined ? (
+        <Notice title="No synchronization yet">
+          Start the first read-only import from the selected Notion root.
+        </Notice>
+      ) : (
+        <>
+          <div className="mt-8 rounded-2xl border border-white/10 bg-white/[0.025] p-5">
+            <div className="flex flex-wrap items-center justify-between gap-3">
+              <div>
+                <p className="text-xs uppercase tracking-wider text-stone-500">
+                  Latest run
+                </p>
+                <p className="mt-1 text-lg font-semibold capitalize">
+                  {run.status}
+                </p>
+              </div>
+              <span
+                className={`rounded-full px-3 py-1 text-xs font-semibold ${run.status === "completed" ? "bg-emerald-300/10 text-emerald-200" : run.status === "partial" || run.status === "failed" ? "bg-amber-300/10 text-amber-200" : "bg-sky-300/10 text-sky-200"}`}
+              >
+                {run.status}
+              </span>
+            </div>
+            <div className="mt-5 grid grid-cols-2 gap-3 sm:grid-cols-5">
+              <Metric label="Discovered" value={run.discoveredCount} />
+              <Metric label="Indexed" value={run.indexedCount} />
+              <Metric label="Skipped" value={run.skippedCount} />
+              <Metric label="Failed" value={run.failedCount} />
+              <Metric label="Deleted" value={run.deletedCount} />
+            </div>
+            {run.errorSummary === null ? null : (
+              <p className="mt-5 rounded-xl bg-amber-300/[0.06] px-4 py-3 text-sm text-amber-100">
+                {run.errorSummary}
+              </p>
+            )}
+            <p className="mt-4 text-xs text-stone-600">
+              Started {formatDate(run.startedAt ?? run.createdAt)} · Last
+              successful sync{" "}
+              {formatDate(
+                overview?.knowledgeSpace?.lastSuccessfulSyncAt ?? null,
+              )}
+            </p>
+          </div>
+          {detail.filter((item) => item.outcome === "failed").length > 0 ? (
+            <div className="mt-6">
+              <h2 className="text-sm font-semibold">
+                Documents needing attention
+              </h2>
+              <div className="mt-3 space-y-3">
+                {detail
+                  .filter((item) => item.outcome === "failed")
+                  .map((item) => (
+                    <div
+                      className="rounded-xl border border-amber-300/20 px-4 py-3"
+                      key={item.id}
+                    >
+                      <p className="text-sm font-semibold">{item.title}</p>
+                      <p className="mt-1 text-xs text-stone-500">
+                        {item.errorMessage ??
+                          "This document could not be synchronized."}
+                      </p>
+                    </div>
+                  ))}
+              </div>
+            </div>
+          ) : null}
+        </>
+      )}
+    </div>
+  );
+}
+
+function SourcesView() {
+  const [query, setQuery] = useState("");
+  const [status, setStatus] = useState("");
+  const [items, setItems] = useState<DocumentSearchItem[]>([]);
+  const [cursor, setCursor] = useState<string | null>(null);
+  const [loading, setLoading] = useState(true);
+  const [error, setError] = useState<string | null>(null);
+
+  const search = useCallback(
+    async (append = false, nextCursor?: string) => {
+      setLoading(true);
+      try {
+        const parameters = new URLSearchParams({ q: query, limit: "20" });
+        if (status) parameters.set("status", status);
+        if (nextCursor) parameters.set("cursor", nextCursor);
+        const response = await fetch(
+          `${apiBaseUrl}/documents/search?${parameters.toString()}`,
+        );
+        const raw: unknown = await response.json();
+        if (!response.ok) throw apiFailure(raw, "Sources could not be loaded.");
+        const body = documentSearchResponseSchema.parse(raw);
+        setItems((current) =>
+          append ? [...current, ...body.items] : body.items,
+        );
+        setCursor(body.nextCursor);
+        setError(null);
+      } catch (caught) {
+        setError(messageFrom(caught, "Sources could not be loaded."));
+      } finally {
+        setLoading(false);
+      }
+    },
+    [query, status],
+  );
+
+  useEffect(() => {
+    void search();
+  }, []);
+
+  return (
+    <div>
+      <p className="font-mono text-xs uppercase tracking-[0.2em] text-emerald-300">
+        Indexed sources
+      </p>
+      <h1 className="mt-3 text-3xl font-semibold tracking-tight">
+        Browse what the assistant can use.
+      </h1>
+      <form
+        className="mt-6 flex flex-wrap gap-3"
+        onSubmit={(event) => {
+          event.preventDefault();
+          void search();
+        }}
+      >
+        <input
+          aria-label="Search sources"
+          className="min-w-56 flex-1 rounded-xl border border-white/10 bg-white/[0.03] px-4 py-3 text-sm outline-none focus:border-emerald-300/50"
+          maxLength={100}
+          onChange={(event) => setQuery(event.target.value)}
+          placeholder="Search titles and content…"
+          value={query}
+        />
+        <select
+          aria-label="Filter source status"
+          className="rounded-xl border border-white/10 bg-[#151816] px-4 py-3 text-sm"
+          onChange={(event) => setStatus(event.target.value)}
+          value={status}
+        >
+          <option value="">All states</option>
+          <option value="indexed">Indexed</option>
+          <option value="stale">Stale</option>
+          <option value="failed">Failed</option>
+        </select>
+        <button
+          className="rounded-xl bg-emerald-300 px-5 py-3 text-sm font-bold text-emerald-950"
+          type="submit"
+        >
+          Search
+        </button>
+      </form>
+      {error === null ? null : (
+        <div className="mt-5 text-sm text-rose-200" role="alert">
+          {error}
+        </div>
+      )}
+      {loading && items.length === 0 ? (
+        <StatusMessage>Loading indexed sources…</StatusMessage>
+      ) : items.length === 0 ? (
+        <Notice title="No indexed sources">
+          Run a synchronization or adjust the search.
+        </Notice>
+      ) : (
+        <div className="mt-6 grid gap-4">
+          {items.map((item) => (
+            <SourceRow item={item} key={item.id} />
+          ))}
+          {cursor === null ? null : (
+            <button
+              className="rounded-xl border border-white/10 px-4 py-3 text-sm text-stone-300"
+              disabled={loading}
+              onClick={() => void search(true, cursor)}
+              type="button"
+            >
+              {loading ? "Loading…" : "Load more"}
+            </button>
+          )}
+        </div>
+      )}
+    </div>
+  );
+}
+
+function SourceRow({ item }: { item: DocumentSearchItem }) {
+  const link = safeLiveSourceUrl(item.sourceUrl);
+  return (
+    <article className="rounded-2xl border border-white/10 bg-white/[0.025] p-5">
+      <div className="flex items-start justify-between gap-4">
+        <div>
+          {link === null ? (
+            <h2 className="font-semibold">{item.title}</h2>
+          ) : (
+            <h2>
+              <a
+                className="font-semibold text-emerald-200 hover:underline"
+                href={link}
+                rel="noopener noreferrer"
+                target="_blank"
+              >
+                {item.title}
+              </a>
+            </h2>
+          )}
+          <p className="mt-1 text-xs text-stone-600">
+            {item.breadcrumb.join(" / ")}
+          </p>
+        </div>
+        <span className="rounded-full border border-white/10 px-2.5 py-1 text-[0.65rem] font-semibold uppercase tracking-wider text-stone-400">
+          {item.indexStatus}
+        </span>
+      </div>
+      {item.excerpt === null ? null : (
+        <p className="mt-4 line-clamp-3 whitespace-pre-wrap text-sm leading-6 text-stone-400">
+          {item.excerpt}
+        </p>
+      )}
+      <p className="mt-4 text-xs text-stone-600">
+        Edited {formatDate(item.lastEditedAt)} · Checked{" "}
+        {formatDate(item.lastSyncedAt)}
+      </p>
+      {item.errorMessage === null ? null : (
+        <p className="mt-3 text-xs text-amber-200">{item.errorMessage}</p>
+      )}
+    </article>
+  );
+}
+
+function Metric({ label, value }: { label: string; value: number }) {
+  return (
+    <div className="rounded-xl bg-black/20 px-3 py-3">
+      <p className="text-xl font-semibold">{value}</p>
+      <p className="text-[0.65rem] uppercase tracking-wider text-stone-600">
+        {label}
+      </p>
+    </div>
+  );
+}
+
+function Notice({ children, title }: { children: string; title: string }) {
+  return (
+    <div className="mt-8 rounded-2xl border border-white/10 bg-white/[0.025] p-6">
+      <h2 className="font-semibold">{title}</h2>
+      <p className="mt-2 max-w-2xl text-sm leading-6 text-stone-400">
+        {children}
+      </p>
+    </div>
+  );
+}
+
+function isActive(run: SyncRun): boolean {
+  return run.status === "queued" || run.status === "running";
+}
+
+function formatDate(value: string | null): string {
+  return value === null ? "never" : new Date(value).toLocaleString();
+}
+
+function safeLiveSourceUrl(value: string | null): string | null {
+  if (value === null) return null;
+  try {
+    const url = new URL(value);
+    return url.protocol === "https:" && url.hostname === "www.notion.so"
+      ? url.toString()
+      : null;
+  } catch {
+    return null;
+  }
+}
+
+function apiFailure(value: unknown, fallback: string): Error {
+  const parsed = apiErrorResponseSchema.safeParse(value);
+  return new Error(parsed.success ? parsed.data.error.message : fallback);
 }
 
 function EmptyState({ onSelect }: { onSelect: (prompt: string) => void }) {

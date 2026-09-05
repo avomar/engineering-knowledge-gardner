@@ -12,6 +12,8 @@ export const sourcePageReferenceSchema = z.object({
   sourceUrl: z.string().url().nullable(),
   parentSourcePageId: z.string().trim().min(1).max(500).nullable(),
   lastEditedAt: z.string().datetime({ offset: true }),
+  breadcrumb: z.array(z.string().trim().min(1).max(500)).default([]),
+  metadata: z.record(z.string(), jsonValueSchema).default({}),
 });
 
 export const sourcePageBatchSchema = z.object({
@@ -20,8 +22,6 @@ export const sourcePageBatchSchema = z.object({
 });
 
 export const sourceDocumentSchema = sourcePageReferenceSchema.extend({
-  breadcrumb: z.array(z.string().trim().min(1).max(500)),
-  metadata: z.record(z.string(), jsonValueSchema),
   contentMarkdown: z.string().min(1),
 });
 

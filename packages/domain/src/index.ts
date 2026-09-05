@@ -49,6 +49,7 @@ export const healthResponseSchema = z.object({
   mode: appModeSchema,
   checks: z.object({
     database: z.enum(["ok", "error"]),
+    sourceConfiguration: z.enum(["ok", "error", "not_applicable"]).optional(),
   }),
 });
 
@@ -75,6 +76,15 @@ export const documentSchema = z.object({
   checksum: z.string().trim().min(1).max(128),
   indexStatus: indexStatusSchema,
   lastSyncedAt: nullableIsoDateTimeSchema,
+  metadata: z.record(z.string(), jsonValueSchema).default({}),
+  lastSyncErrorCode: z.string().trim().min(1).max(100).nullable().default(null),
+  lastSyncErrorMessage: z
+    .string()
+    .trim()
+    .min(1)
+    .max(500)
+    .nullable()
+    .default(null),
   createdAt: isoDateTimeSchema,
   updatedAt: isoDateTimeSchema,
 });
@@ -100,8 +110,81 @@ export const syncRunSchema = z.object({
   indexedCount: z.number().int().nonnegative(),
   skippedCount: z.number().int().nonnegative(),
   failedCount: z.number().int().nonnegative(),
+  deletedCount: z.number().int().nonnegative().default(0),
   errorSummary: z.string().max(2_000).nullable(),
+  errorCode: z.string().trim().min(1).max(100).nullable().default(null),
+  discoveryComplete: z.boolean().default(false),
   createdAt: isoDateTimeSchema,
+});
+
+export const syncDocumentOutcomeSchema = z.enum([
+  "indexed",
+  "skipped",
+  "failed",
+  "deleted",
+]);
+
+export const knowledgeFreshnessSchema = z.enum([
+  "never_synced",
+  "syncing",
+  "fresh",
+  "partially_stale",
+  "failed",
+]);
+
+export const syncRunSummarySchema = syncRunSchema;
+
+export const syncRunDocumentSchema = z.object({
+  id: idSchema,
+  syncRunId: idSchema,
+  documentId: idSchema.nullable(),
+  sourcePageId: z.string().trim().min(1).max(500),
+  title: z.string().trim().min(1).max(500),
+  sourceUrl: z.string().url().nullable(),
+  outcome: syncDocumentOutcomeSchema,
+  errorCode: z.string().trim().min(1).max(100).nullable(),
+  errorMessage: z.string().trim().min(1).max(500).nullable(),
+  createdAt: isoDateTimeSchema,
+});
+
+export const syncStartResponseSchema = z.object({
+  run: syncRunSummarySchema,
+  reused: z.boolean(),
+});
+
+export const syncOverviewResponseSchema = z.object({
+  knowledgeSpace: z
+    .object({
+      id: idSchema,
+      name: z.string().trim().min(1).max(200),
+      freshness: knowledgeFreshnessSchema,
+      lastSuccessfulSyncAt: nullableIsoDateTimeSchema,
+    })
+    .nullable(),
+  runs: z.array(syncRunSummarySchema).max(20),
+});
+
+export const syncDetailResponseSchema = z.object({
+  run: syncRunSummarySchema,
+  documents: z.array(syncRunDocumentSchema),
+});
+
+export const documentSearchItemSchema = z.object({
+  id: idSchema,
+  sourcePageId: z.string().trim().min(1).max(500),
+  title: z.string().trim().min(1).max(500),
+  breadcrumb: z.array(z.string().trim().min(1).max(500)),
+  sourceUrl: z.string().url().nullable(),
+  excerpt: z.string().max(500).nullable(),
+  lastEditedAt: isoDateTimeSchema,
+  lastSyncedAt: nullableIsoDateTimeSchema,
+  indexStatus: indexStatusSchema,
+  errorMessage: z.string().trim().min(1).max(500).nullable(),
+});
+
+export const documentSearchResponseSchema = z.object({
+  items: z.array(documentSearchItemSchema).max(50),
+  nextCursor: z.string().regex(/^\d+$/u).nullable(),
 });
 
 export const conversationSchema = z.object({
@@ -198,6 +281,13 @@ export const apiErrorCodeSchema = z.enum([
   "ai_unavailable",
   "database_unavailable",
   "mode_unavailable",
+  "source_configuration_error",
+  "notion_access_denied",
+  "notion_rate_limited",
+  "notion_unavailable",
+  "workflow_unavailable",
+  "sync_not_found",
+  "invalid_cursor",
   "not_found",
 ]);
 
@@ -255,6 +345,8 @@ export type AppMode = z.infer<typeof appModeSchema>;
 export type SourceType = z.infer<typeof sourceTypeSchema>;
 export type IndexStatus = z.infer<typeof indexStatusSchema>;
 export type SyncStatus = z.infer<typeof syncStatusSchema>;
+export type SyncDocumentOutcome = z.infer<typeof syncDocumentOutcomeSchema>;
+export type KnowledgeFreshness = z.infer<typeof knowledgeFreshnessSchema>;
 export type MessageRole = z.infer<typeof messageRoleSchema>;
 export type Confidence = z.infer<typeof confidenceSchema>;
 export type DraftStatus = z.infer<typeof draftStatusSchema>;
@@ -263,6 +355,14 @@ export type KnowledgeSpace = z.infer<typeof knowledgeSpaceSchema>;
 export type Document = z.infer<typeof documentSchema>;
 export type DocumentChunk = z.infer<typeof documentChunkSchema>;
 export type SyncRun = z.infer<typeof syncRunSchema>;
+export type SyncRunDocument = z.infer<typeof syncRunDocumentSchema>;
+export type SyncStartResponse = z.infer<typeof syncStartResponseSchema>;
+export type SyncOverviewResponse = z.infer<typeof syncOverviewResponseSchema>;
+export type SyncDetailResponse = z.infer<typeof syncDetailResponseSchema>;
+export type DocumentSearchItem = z.infer<typeof documentSearchItemSchema>;
+export type DocumentSearchResponse = z.infer<
+  typeof documentSearchResponseSchema
+>;
 export type Conversation = z.infer<typeof conversationSchema>;
 export type Message = z.infer<typeof messageSchema>;
 export type Citation = z.infer<typeof citationSchema>;

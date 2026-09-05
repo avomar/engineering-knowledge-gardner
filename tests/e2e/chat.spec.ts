@@ -8,7 +8,7 @@ const documentId = "50000000-0000-4000-8000-000000000005";
 const sessionId = "50000000-0000-4000-8000-000000000006";
 
 test.beforeEach(async ({ page }) => {
-  await page.route("http://localhost:8787/health", async (route) => {
+  await page.route("http://127.0.0.1:5173/api/health", async (route) => {
     await route.fulfill({
       json: { status: "ok", mode: "demo", checks: { database: "ok" } },
     });
@@ -18,7 +18,7 @@ test.beforeEach(async ({ page }) => {
 test("asks a starter question and renders grounded evidence", async ({
   page,
 }) => {
-  await page.route("http://localhost:8787/chat", async (route) => {
+  await page.route("http://127.0.0.1:5173/api/chat", async (route) => {
     await new Promise((resolve) => setTimeout(resolve, 100));
     await route.fulfill({ json: chatResponse() });
   });
@@ -52,7 +52,7 @@ test("restores one active conversation and starts a new chat", async ({
     { activeConversationId: conversationId, browserSessionId: sessionId },
   );
   await page.route(
-    `http://localhost:8787/conversations/${conversationId}/messages`,
+    `http://127.0.0.1:5173/api/conversations/${conversationId}/messages`,
     async (route) => {
       const response = chatResponse();
       await route.fulfill({
@@ -82,7 +82,7 @@ test("restores one active conversation and starts a new chat", async ({
 
 test("retains a failed question and retries it", async ({ page }) => {
   let attempts = 0;
-  await page.route("http://localhost:8787/chat", async (route) => {
+  await page.route("http://127.0.0.1:5173/api/chat", async (route) => {
     attempts += 1;
     if (attempts === 1) {
       await route.fulfill({
@@ -117,7 +117,7 @@ test("retains a failed question and retries it", async ({ page }) => {
 });
 
 test("shows an explicit insufficient-evidence answer", async ({ page }) => {
-  await page.route("http://localhost:8787/chat", async (route) => {
+  await page.route("http://127.0.0.1:5173/api/chat", async (route) => {
     const response = chatResponse();
     response.userMessage.content = "What did we decide about Kubernetes?";
     response.assistantMessage.content =

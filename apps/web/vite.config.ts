@@ -9,6 +9,11 @@ const directory = path.dirname(fileURLToPath(import.meta.url));
 
 export default defineConfig({
   plugins: [react(), tailwindcss()],
+  server: {
+    proxy: {
+      "/api": "http://localhost:8787",
+    },
+  },
   resolve: {
     preserveSymlinks: true,
     alias: {

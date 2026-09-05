@@ -1,14 +1,19 @@
 {
   "$schema": "node_modules/wrangler/config-schema.json",
   "name": "engineering-knowledge-gardener-api",
-  "main": "src/index.ts",
+  "main": "src/entry.ts",
   "compatibility_date": "2026-09-03",
+  "compatibility_flags": ["global_fetch_strictly_public"],
   "observability": {
     "enabled": true,
   },
+  "assets": {
+    "directory": "../web/dist",
+    "not_found_handling": "single-page-application",
+    "run_worker_first": ["/api", "/api/*"],
+  },
   "vars": {
     "APP_MODE": "demo",
-    "APP_ALLOWED_ORIGIN": "http://localhost:5173",
   },
   "ai": {
     "binding": "AI",
@@ -39,4 +44,48 @@
       "fallthrough": true,
     },
   ],
+  "workflows": [
+    {
+      "name": "engineering-knowledge-gardener-sync-demo",
+      "binding": "KNOWLEDGE_SYNC",
+      "class_name": "KnowledgeSyncWorkflow",
+    },
+  ],
+  "env": {
+    "live": {
+      "name": "engineering-knowledge-gardener-api-live",
+      "vars": {
+        "APP_MODE": "live",
+      },
+      "d1_databases": [
+        {
+          "binding": "DB",
+          "database_name": "knowledge-gardener-live",
+          "database_id": "e1a72ff1-f9a7-4aba-b704-da8df024de0c",
+          "migrations_dir": "migrations",
+        },
+      ],
+      "ai": {
+        "binding": "AI",
+        "remote": true,
+      },
+      "ratelimits": [
+        {
+          "name": "CHAT_RATE_LIMITER",
+          "namespace_id": "2001",
+          "simple": {
+            "limit": 5,
+            "period": 60,
+          },
+        },
+      ],
+      "workflows": [
+        {
+          "name": "engineering-knowledge-gardener-sync-live",
+          "binding": "KNOWLEDGE_SYNC",
+          "class_name": "KnowledgeSyncWorkflow",
+        },
+      ],
+    },
+  },
 }

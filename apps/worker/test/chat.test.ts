@@ -20,7 +20,6 @@ import type { Env } from "../src/env";
 import { createApp } from "../src/index";
 
 const directory = path.dirname(fileURLToPath(import.meta.url));
-const origin = "http://localhost:5173";
 const sessionId = "30000000-0000-4000-8000-000000000001";
 const otherSessionId = "30000000-0000-4000-8000-000000000002";
 
@@ -97,7 +96,7 @@ describe("demo grounded chat", () => {
     );
     const app = testApp(generator);
     const restored = await app.request(
-      `https://api.example.invalid/conversations/${created.conversationId}/messages`,
+      `https://api.example.invalid/api/conversations/${created.conversationId}/messages`,
       { headers: requestHeaders(sessionId) },
       environment(),
     );
@@ -111,7 +110,7 @@ describe("demo grounded chat", () => {
     );
 
     const hidden = await app.request(
-      `https://api.example.invalid/conversations/${created.conversationId}/messages`,
+      `https://api.example.invalid/api/conversations/${created.conversationId}/messages`,
       { headers: requestHeaders(otherSessionId) },
       environment(),
     );
@@ -266,21 +265,9 @@ describe("demo grounded chat", () => {
     expect(denied.headers.get("Retry-After")).toBe("60");
   });
 
-  it("allows the demo session header in CORS preflight", async () => {
-    const response = await testApp(new FixtureAnswerGenerator()).request(
-      "https://api.example.invalid/chat",
-      { method: "OPTIONS", headers: { Origin: origin } },
-      environment(),
-    );
-    expect(response.status).toBe(204);
-    expect(response.headers.get("Access-Control-Allow-Headers")).toContain(
-      "X-Demo-Session-Id",
-    );
-  });
-
   it("fails closed outside demo mode", async () => {
     const response = await testApp(new FixtureAnswerGenerator()).request(
-      "https://api.example.invalid/chat",
+      "https://api.example.invalid/api/chat",
       {
         method: "POST",
         headers: requestHeaders(sessionId),
@@ -343,7 +330,6 @@ function environment(rateLimiter: RateLimit = allowRateLimit()): Env {
     DB: database,
     AI: {} as Ai,
     CHAT_RATE_LIMITER: rateLimiter,
-    APP_ALLOWED_ORIGIN: origin,
     APP_MODE: "demo",
   };
 }
@@ -355,7 +341,7 @@ async function chatRequest(
   rateLimiter: RateLimit = allowRateLimit(),
 ): Promise<Response> {
   return await testApp(generator).request(
-    "https://api.example.invalid/chat",
+    "https://api.example.invalid/api/chat",
     {
       method: "POST",
       headers: requestHeaders(browserSessionId),
@@ -369,7 +355,6 @@ function requestHeaders(browserSessionId: string): Record<string, string> {
   return {
     "Content-Type": "application/json",
     "X-Demo-Session-Id": browserSessionId,
-    Origin: origin,
   };
 }
 
@@ -386,7 +371,11 @@ async function messageCount(): Promise<number> {
 }
 
 async function applyMigrations(target: D1Database): Promise<void> {
-  const files = ["0001_initial.sql", "0002_chat_answer_metadata.sql"];
+  const files = [
+    "0001_initial.sql",
+    "0002_chat_answer_metadata.sql",
+    "0003_live_notion_sync.sql",
+  ];
   for (const filename of files) {
     const migration = await readFile(
       path.join(directory, "../migrations", filename),

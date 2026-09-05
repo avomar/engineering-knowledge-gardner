@@ -2,8 +2,13 @@ import {
   apiErrorResponseSchema,
   chatRequestSchema,
   conversationMessagesResponseSchema,
+  documentSearchResponseSchema,
   healthResponseSchema,
   idSchema,
+  indexStatusSchema,
+  syncDetailResponseSchema,
+  syncOverviewResponseSchema,
+  syncStartResponseSchema,
   type ApiErrorCode,
   type HealthResponse,
 } from "@knowledge-gardener/domain";
@@ -14,7 +19,10 @@ import {
   type AnswerGenerator,
 } from "./answer-generator";
 import { ChatService, ChatServiceError, parseSessionId } from "./chat-service";
+import { DemoCorpusService } from "./demo-corpus";
 import type { Env } from "./env";
+import { optionalRoot, SyncService, SyncServiceError } from "./sync-service";
+import { SyncRepository } from "./sync-repository";
 
 interface AppOptions {
   createAnswerGenerator?: (environment: Env) => AnswerGenerator;
@@ -25,30 +33,9 @@ interface AppOptions {
 
 export function createApp(options: AppOptions = {}) {
   const app = new Hono<{ Bindings: Env }>();
+  const api = new Hono<{ Bindings: Env }>();
 
-  app.use("*", async (context, next) => {
-    const origin = context.req.header("Origin");
-
-    if (context.req.method === "OPTIONS") {
-      if (origin !== context.env.APP_ALLOWED_ORIGIN) {
-        return context.body(null, 403);
-      }
-      return context.body(null, 204, {
-        "Access-Control-Allow-Headers": "Content-Type, X-Demo-Session-Id",
-        "Access-Control-Allow-Methods": "GET,POST,OPTIONS",
-        "Access-Control-Allow-Origin": origin,
-        Vary: "Origin",
-      });
-    }
-
-    await next();
-    if (origin === context.env.APP_ALLOWED_ORIGIN) {
-      context.header("Access-Control-Allow-Origin", origin);
-      context.header("Vary", "Origin");
-    }
-  });
-
-  app.get("/health", async (context) => {
+  api.get("/health", async (context) => {
     try {
       const result =
         await context.env.DB.prepare("SELECT 1 AS ok").first<number>("ok");
@@ -57,20 +44,32 @@ export function createApp(options: AppOptions = {}) {
       const response: HealthResponse = {
         status: "ok",
         mode: context.env.APP_MODE,
-        checks: { database: "ok" },
+        checks: {
+          database: "ok",
+          sourceConfiguration:
+            context.env.APP_MODE === "live"
+              ? optionalRoot(context.env) === null
+                ? "error"
+                : "ok"
+              : "not_applicable",
+        },
       };
       return context.json(healthResponseSchema.parse(response), 200);
     } catch {
       const response: HealthResponse = {
         status: "degraded",
         mode: context.env.APP_MODE,
-        checks: { database: "error" },
+        checks: {
+          database: "error",
+          sourceConfiguration:
+            context.env.APP_MODE === "live" ? "error" : "not_applicable",
+        },
       };
       return context.json(healthResponseSchema.parse(response), 503);
     }
   });
 
-  app.post("/chat", async (context) => {
+  api.post("/chat", async (context) => {
     if (context.env.APP_MODE !== "demo") {
       return errorResponse(
         context,
@@ -106,7 +105,7 @@ export function createApp(options: AppOptions = {}) {
     }
   });
 
-  app.get("/conversations/:conversationId/messages", async (context) => {
+  api.get("/conversations/:conversationId/messages", async (context) => {
     if (context.env.APP_MODE !== "demo") {
       return errorResponse(
         context,
@@ -139,6 +138,151 @@ export function createApp(options: AppOptions = {}) {
     }
   });
 
+  api.post("/sync", async (context) => {
+    if (context.env.APP_MODE !== "live") {
+      return errorResponse(
+        context,
+        "mode_unavailable",
+        "Synchronization is available only in live mode.",
+        false,
+        503,
+      );
+    }
+    try {
+      return context.json(
+        syncStartResponseSchema.parse(
+          await new SyncService(context.env).start(),
+        ),
+        202,
+      );
+    } catch (error) {
+      return handleSyncError(context, error);
+    }
+  });
+
+  api.get("/sync", async (context) => {
+    if (context.env.APP_MODE !== "live") {
+      return errorResponse(
+        context,
+        "mode_unavailable",
+        "Synchronization is available only in live mode.",
+        false,
+        503,
+      );
+    }
+    const limitText = context.req.query("limit") ?? "10";
+    if (
+      !/^\d+$/u.test(limitText) ||
+      Number(limitText) < 1 ||
+      Number(limitText) > 20
+    ) {
+      return validationError(
+        context,
+        "Synchronization history limit is invalid.",
+      );
+    }
+    try {
+      return context.json(
+        syncOverviewResponseSchema.parse(
+          await new SyncService(context.env).overview(Number(limitText)),
+        ),
+        200,
+      );
+    } catch (error) {
+      return handleSyncError(context, error);
+    }
+  });
+
+  api.get("/sync/:runId", async (context) => {
+    if (context.env.APP_MODE !== "live") {
+      return errorResponse(
+        context,
+        "mode_unavailable",
+        "Synchronization is available only in live mode.",
+        false,
+        503,
+      );
+    }
+    const runId = idSchema.safeParse(context.req.param("runId"));
+    if (!runId.success)
+      return validationError(
+        context,
+        "A valid synchronization run ID is required.",
+      );
+    try {
+      return context.json(
+        syncDetailResponseSchema.parse(
+          await new SyncService(context.env).detail(runId.data),
+        ),
+        200,
+      );
+    } catch (error) {
+      return handleSyncError(context, error);
+    }
+  });
+
+  api.get("/documents/search", async (context) => {
+    const query = (context.req.query("q") ?? "").trim();
+    const cursor = context.req.query("cursor") ?? "0";
+    const limitText = context.req.query("limit") ?? "20";
+    const statusText = context.req.query("status");
+    const status =
+      statusText === undefined
+        ? undefined
+        : indexStatusSchema.safeParse(statusText);
+    if (
+      query.length > 100 ||
+      !/^\d+$/u.test(cursor) ||
+      !/^\d+$/u.test(limitText) ||
+      Number(limitText) < 1 ||
+      Number(limitText) > 50 ||
+      (status !== undefined && !status.success)
+    ) {
+      return errorResponse(
+        context,
+        /^\d+$/u.test(cursor) ? "validation_error" : "invalid_cursor",
+        "Document search parameters are invalid.",
+        false,
+        400,
+      );
+    }
+    try {
+      let spaceId: string | null;
+      if (context.env.APP_MODE === "demo") {
+        spaceId = await new DemoCorpusService(context.env.DB).ensureReady();
+      } else {
+        const root = optionalRoot(context.env);
+        spaceId =
+          root === null
+            ? null
+            : await new SyncRepository(context.env.DB).findSpaceId(
+                "live",
+                root,
+              );
+      }
+      const result =
+        spaceId === null
+          ? { items: [], nextCursor: null }
+          : await new SyncRepository(context.env.DB).searchDocuments({
+              spaceId,
+              query,
+              ...(status?.success === true ? { status: status.data } : {}),
+              offset: Number(cursor),
+              limit: Number(limitText),
+            });
+      return context.json(documentSearchResponseSchema.parse(result), 200);
+    } catch {
+      return errorResponse(
+        context,
+        "database_unavailable",
+        "Sources are temporarily unavailable.",
+        true,
+        503,
+      );
+    }
+  });
+
+  app.route("/api", api);
   app.notFound((context) =>
     errorResponse(context, "not_found", "Not found.", false, 404),
   );
@@ -189,6 +333,31 @@ function handleChatError(context: Context, error: unknown) {
   );
 }
 
+function handleSyncError(context: Context, error: unknown) {
+  if (!(error instanceof SyncServiceError)) {
+    return errorResponse(
+      context,
+      "database_unavailable",
+      "Synchronization is temporarily unavailable.",
+      true,
+      503,
+    );
+  }
+  const status =
+    error.code === "sync_not_found"
+      ? 404
+      : error.code === "invalid_cursor"
+        ? 400
+        : 503;
+  return errorResponse(
+    context,
+    error.code,
+    error.message,
+    error.retryable,
+    status,
+  );
+}
+
 function validationError(context: Context, message: string) {
   return errorResponse(context, "validation_error", message, false, 400);
 }
@@ -198,7 +367,7 @@ function errorResponse(
   code: ApiErrorCode,
   message: string,
   retryable: boolean,
-  status: 400 | 404 | 429 | 502 | 503,
+  status: 202 | 400 | 404 | 429 | 502 | 503,
 ) {
   return context.json(
     apiErrorResponseSchema.parse({ error: { code, message, retryable } }),
