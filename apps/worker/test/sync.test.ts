@@ -19,6 +19,9 @@ const rootId = "99999999-9999-4999-8999-999999999999";
 let miniflare: Miniflare;
 let database: D1Database;
 let workflowCreates = 0;
+const app = createApp({
+  accessVerifier: { verify: async () => "test-access-subject" },
+});
 
 beforeAll(async () => {
   miniflare = new Miniflare({
@@ -34,6 +37,7 @@ beforeAll(async () => {
     "0003_live_notion_sync.sql",
     "0004_hybrid_retrieval.sql",
     "0005_safe_draft_publishing.sql",
+    "0006_garden_feedback_hardening.sql",
   ]) {
     const sql = await readFile(
       path.join(directory, "../migrations", filename),
@@ -79,9 +83,12 @@ describe("live sync API", () => {
   });
 
   it("returns safe configuration and lookup failures", async () => {
-    const missing = await createApp().request(
+    const missing = await app.request(
       "https://api.invalid/api/sync",
-      { method: "POST" },
+      {
+        method: "POST",
+        headers: { "Cf-Access-Jwt-Assertion": "test-token" },
+      },
       { ...environment(), NOTION_TOKEN: undefined },
     );
     expect(missing.status).toBe(503);
@@ -152,6 +159,8 @@ function environment(): Env {
     AI: {} as Ai,
     CHAT_RATE_LIMITER: {} as RateLimit,
     APP_MODE: "live",
+    ACCESS_TEAM_DOMAIN: "test.cloudflareaccess.com",
+    ACCESS_AUD: "test-audience",
     NOTION_TOKEN: "test-token",
     NOTION_ROOT_PAGE_ID: rootId,
     KNOWLEDGE_SYNC: {
@@ -164,9 +173,11 @@ function environment(): Env {
 }
 
 async function request(pathname: string, init: RequestInit = {}) {
-  return await createApp().request(
+  const headers = new Headers(init.headers);
+  headers.set("Cf-Access-Jwt-Assertion", "test-token");
+  return await app.request(
     `https://api.invalid${pathname}`,
-    init,
+    { ...init, headers },
     environment(),
   );
 }

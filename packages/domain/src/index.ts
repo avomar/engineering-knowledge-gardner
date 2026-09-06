@@ -30,6 +30,28 @@ export const draftPublishStateSchema = z.enum([
   "failed",
   "published",
 ]);
+export const gardenSignalTypeSchema = z.enum([
+  "stale_document",
+  "missing_metadata",
+  "title_collision",
+  "obsolete_keyword",
+]);
+export const gardenFindingStatusSchema = z.enum([
+  "open",
+  "dismissed",
+  "resolved",
+]);
+export const gardenSeveritySchema = z.enum(["high", "medium", "low"]);
+export const gardenScanStatusSchema = z.enum([
+  "running",
+  "completed",
+  "failed",
+]);
+export const gardenAiStatusSchema = z.enum([
+  "not_requested",
+  "completed",
+  "degraded",
+]);
 
 export const idSchema = z.string().uuid();
 export const isoDateTimeSchema = z.string().datetime({ offset: true });
@@ -59,6 +81,7 @@ export const healthResponseSchema = z.object({
     sourceConfiguration: z.enum(["ok", "error", "not_applicable"]).optional(),
     semanticIndex: z.enum(["ok", "error", "not_applicable"]).optional(),
     draftPublishing: z.enum(["ok", "error", "not_applicable"]).optional(),
+    accessValidation: z.enum(["ok", "error", "not_applicable"]).optional(),
   }),
 });
 
@@ -269,6 +292,14 @@ export const chatMessageSchema = z.discriminatedUnion("role", [
     citations: z.array(chatCitationSchema).max(6),
     confidence: confidenceSchema,
     unansweredQuestions: z.array(z.string().trim().min(1).max(500)).max(6),
+    feedback: z
+      .object({
+        rating: z.union([z.literal(-1), z.literal(1)]),
+        correction: z.string().max(2_000).nullable(),
+      })
+      .nullable()
+      .optional()
+      .default(null),
   }),
 ]);
 
@@ -314,6 +345,13 @@ export const apiErrorCodeSchema = z.enum([
   "draft_publish_uncertain",
   "draft_generation_unavailable",
   "notion_write_unavailable",
+  "authentication_required",
+  "access_configuration_error",
+  "garden_scan_in_progress",
+  "garden_conflict",
+  "garden_unavailable",
+  "feedback_target_not_found",
+  "maintenance_conflict",
 ]);
 
 export const apiErrorResponseSchema = z.object({
@@ -365,6 +403,21 @@ export const draftSchema = z.object({
   publishedAt: nullableIsoDateTimeSchema,
 });
 
+export const feedbackSummarySchema = z.object({
+  rating: z.union([z.literal(-1), z.literal(1)]),
+  correction: z.string().max(2_000).nullable(),
+});
+
+export const publicDraftSchema = draftSchema
+  .omit({
+    idempotencyKey: true,
+    publishStartedAt: true,
+    publishLeaseExpiresAt: true,
+    lastErrorCode: true,
+    lastErrorMessage: true,
+  })
+  .extend({ feedback: feedbackSummarySchema.nullable().default(null) });
+
 export const createDraftRequestSchema = z.object({
   sourceMessageId: idSchema,
   instruction: z.string().trim().min(1).max(1_000).optional(),
@@ -382,11 +435,11 @@ export const publishDraftRequestSchema = versionedDraftRequestSchema.extend({
   confirmed: z.literal(true),
 });
 export const draftListResponseSchema = z.object({
-  items: z.array(draftSchema).max(50),
+  items: z.array(publicDraftSchema).max(50),
   nextCursor: z.string().regex(/^\d+$/u).nullable(),
 });
 export const publishDraftResponseSchema = z.object({
-  draft: draftSchema,
+  draft: publicDraftSchema,
   reused: z.boolean(),
 });
 
@@ -408,12 +461,120 @@ export const feedbackSchema = z
     draftId: idSchema.nullable(),
     rating: z.union([z.literal(-1), z.literal(1)]),
     correction: z.string().max(5_000).nullable(),
+    ownerSessionId: z.string().trim().min(1).max(500).nullable().default(null),
     createdAt: isoDateTimeSchema,
+    updatedAt: nullableIsoDateTimeSchema.default(null),
   })
   .refine(
     ({ messageId, draftId }) => (messageId === null) !== (draftId === null),
     { message: "Feedback must target exactly one message or draft." },
   );
+
+export const feedbackRequestSchema = z
+  .object({
+    messageId: idSchema.optional(),
+    draftId: idSchema.optional(),
+    rating: z.union([z.literal(-1), z.literal(1)]),
+    correction: z.string().trim().min(1).max(2_000).optional(),
+  })
+  .refine(
+    ({ messageId, draftId }) =>
+      (messageId === undefined) !== (draftId === undefined),
+    { message: "Feedback must target exactly one resource." },
+  );
+
+export const feedbackResponseSchema = z.object({
+  feedback: feedbackSummarySchema,
+});
+
+export const gardenPolicySchema = z.object({
+  staleAfterDays: z.number().int().min(1).max(3_650),
+  requiredMetadataKeys: z.array(z.string().trim().min(1).max(100)).max(10),
+  obsoleteTerms: z
+    .array(
+      z.object({
+        term: z.string().trim().min(2).max(100),
+        replacement: z.string().trim().min(1).max(200).optional(),
+      }),
+    )
+    .max(10),
+});
+
+export const gardenEvidenceSchema = z.object({
+  documentId: idSchema,
+  sourcePageId: z.string().trim().min(1).max(500),
+  title: z.string().trim().min(1).max(500),
+  sourceUrl: z.string().url().nullable(),
+  lastEditedAt: isoDateTimeSchema,
+  detail: z.string().trim().min(1).max(500),
+});
+
+export const gardenScanSchema = z.object({
+  id: idSchema,
+  status: gardenScanStatusSchema,
+  aiStatus: gardenAiStatusSchema,
+  findingCount: z.number().int().nonnegative(),
+  aiEnrichedCount: z.number().int().nonnegative(),
+  errorCode: z.string().trim().min(1).max(100).nullable(),
+  startedAt: isoDateTimeSchema,
+  completedAt: nullableIsoDateTimeSchema,
+});
+
+export const gardenFindingSchema = z.object({
+  id: idSchema,
+  fingerprint: z.string().length(64),
+  signalType: gardenSignalTypeSchema,
+  severity: gardenSeveritySchema,
+  status: gardenFindingStatusSchema,
+  version: z.number().int().positive(),
+  title: z.string().trim().min(1).max(200),
+  reason: z.string().trim().min(1).max(1_000),
+  recommendation: z.string().trim().min(1).max(1_000),
+  evidence: z.array(gardenEvidenceSchema).min(1).max(50),
+  aiEnriched: z.boolean(),
+  firstDetectedAt: isoDateTimeSchema,
+  lastDetectedAt: isoDateTimeSchema,
+  dismissedAt: nullableIsoDateTimeSchema,
+  resolvedAt: nullableIsoDateTimeSchema,
+  updatedAt: isoDateTimeSchema,
+});
+
+export const gardenOverviewSchema = z.object({
+  policy: gardenPolicySchema,
+  latestScan: gardenScanSchema.nullable(),
+  counts: z.object({
+    open: z.number().int().nonnegative(),
+    dismissed: z.number().int().nonnegative(),
+    resolved: z.number().int().nonnegative(),
+  }),
+  items: z.array(gardenFindingSchema).max(50),
+  nextCursor: z.string().regex(/^\d+$/u).nullable(),
+});
+
+export const gardenScanResponseSchema = z.object({
+  scan: gardenScanSchema,
+  reused: z.boolean(),
+});
+
+export const updateGardenFindingRequestSchema = z.object({
+  status: z.enum(["open", "dismissed"]),
+  version: z.number().int().positive(),
+});
+
+export const conversationClearRequestSchema = z.object({
+  confirmed: z.literal(true),
+});
+export const conversationClearResponseSchema = z.object({
+  deletedConversations: z.number().int().nonnegative(),
+});
+export const indexResetRequestSchema = z.object({
+  confirmation: z.literal("RESET INDEX"),
+});
+export const indexResetResponseSchema = z.object({
+  deletedDocuments: z.number().int().nonnegative(),
+  queuedVectors: z.number().int().nonnegative(),
+  pendingVectorCleanup: z.boolean(),
+});
 
 export type AppMode = z.infer<typeof appModeSchema>;
 export type SourceType = z.infer<typeof sourceTypeSchema>;
@@ -425,6 +586,9 @@ export type MessageRole = z.infer<typeof messageRoleSchema>;
 export type Confidence = z.infer<typeof confidenceSchema>;
 export type DraftStatus = z.infer<typeof draftStatusSchema>;
 export type DraftPublishState = z.infer<typeof draftPublishStateSchema>;
+export type GardenSignalType = z.infer<typeof gardenSignalTypeSchema>;
+export type GardenFindingStatus = z.infer<typeof gardenFindingStatusSchema>;
+export type GardenSeverity = z.infer<typeof gardenSeveritySchema>;
 export type HealthResponse = z.infer<typeof healthResponseSchema>;
 export type KnowledgeSpace = z.infer<typeof knowledgeSpaceSchema>;
 export type Document = z.infer<typeof documentSchema>;
@@ -453,6 +617,12 @@ export type ConversationMessagesResponse = z.infer<
 export type ApiErrorCode = z.infer<typeof apiErrorCodeSchema>;
 export type ApiErrorResponse = z.infer<typeof apiErrorResponseSchema>;
 export type Draft = z.infer<typeof draftSchema>;
+export type PublicDraft = z.infer<typeof publicDraftSchema>;
 export type DraftSource = z.infer<typeof draftSourceSchema>;
 export type AuditEvent = z.infer<typeof auditEventSchema>;
 export type Feedback = z.infer<typeof feedbackSchema>;
+export type FeedbackSummary = z.infer<typeof feedbackSummarySchema>;
+export type GardenPolicy = z.infer<typeof gardenPolicySchema>;
+export type GardenScan = z.infer<typeof gardenScanSchema>;
+export type GardenFinding = z.infer<typeof gardenFindingSchema>;
+export type GardenOverview = z.infer<typeof gardenOverviewSchema>;

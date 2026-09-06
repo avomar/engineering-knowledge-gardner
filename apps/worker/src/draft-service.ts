@@ -1,6 +1,5 @@
 import {
   createDraftRequestSchema,
-  publishDraftResponseSchema,
   type Draft,
   type DraftSource,
 } from "@knowledge-gardener/domain";
@@ -216,10 +215,10 @@ export class DraftService {
     if (claim === "missing")
       throw new DraftServiceError("draft_not_found", "Draft not found.", false);
     if (claim === "published")
-      return publishDraftResponseSchema.parse({
+      return {
         draft: await this.requireDraft(id, owner),
         reused: true,
-      });
+      };
     if (claim === "in_progress")
       throw new DraftServiceError(
         "draft_publish_in_progress",
@@ -250,10 +249,10 @@ export class DraftService {
           this.now(),
           true,
         );
-        return publishDraftResponseSchema.parse({
+        return {
           draft: await this.requireDraft(id, owner),
           reused: true,
-        });
+        };
       }
       const page = await client.createPage(
         parent,
@@ -269,10 +268,10 @@ export class DraftService {
         this.now(),
         false,
       );
-      return publishDraftResponseSchema.parse({
+      return {
         draft: await this.requireDraft(id, owner),
         reused: false,
-      });
+      };
     } catch (error) {
       const definite =
         error instanceof DraftServiceError ||

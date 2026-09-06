@@ -4,7 +4,7 @@ import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { apiErrorResponseSchema } from "@knowledge-gardener/domain";
 
 import type { Env } from "../src/env";
-import { app } from "../src/index";
+import { app, createApp } from "../src/index";
 
 let miniflare: Miniflare;
 let environment: Env;
@@ -89,5 +89,64 @@ describe("GET /health", () => {
     expect(apiErrorResponseSchema.parse(await response.json()).error.code).toBe(
       "not_found",
     );
+  });
+
+  it("reports missing live Access configuration as degraded", async () => {
+    const response = await createApp().request(
+      "https://api.example.invalid/api/health",
+      {},
+      { ...environment, APP_MODE: "live" },
+    );
+    expect(response.status).toBe(503);
+    expect(await response.json()).toMatchObject({
+      status: "degraded",
+      checks: { accessValidation: "error" },
+    });
+  });
+
+  it("fails closed for protected live routes and accepts verified assertions", async () => {
+    const live: Env = {
+      ...environment,
+      APP_MODE: "live",
+      ACCESS_TEAM_DOMAIN: "test.cloudflareaccess.com",
+      ACCESS_AUD: "test-audience",
+    };
+    const protectedApp = createApp({
+      accessVerifier: { verify: async () => "verified-subject" },
+    });
+    const missing = await protectedApp.request(
+      "https://api.example.invalid/api/not-a-route",
+      {},
+      live,
+    );
+    expect(missing.status).toBe(401);
+
+    const accepted = await protectedApp.request(
+      "https://api.example.invalid/api/not-a-route",
+      { headers: { "Cf-Access-Jwt-Assertion": "signed-token" } },
+      live,
+    );
+    expect(accepted.status).toBe(404);
+
+    const rejected = await createApp({
+      accessVerifier: {
+        verify: async () => Promise.reject(new Error("bad signature")),
+      },
+    }).request(
+      "https://api.example.invalid/api/not-a-route",
+      { headers: { "Cf-Access-Jwt-Assertion": "invalid-token" } },
+      live,
+    );
+    expect(rejected.status).toBe(401);
+    expect(await rejected.text()).not.toContain("bad signature");
+  });
+
+  it("does not require an Access assertion in public demo mode", async () => {
+    const response = await createApp().request(
+      "https://api.example.invalid/api/not-a-route",
+      {},
+      environment,
+    );
+    expect(response.status).toBe(404);
   });
 });

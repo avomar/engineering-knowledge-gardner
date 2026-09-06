@@ -14,6 +14,10 @@
   },
   "vars": {
     "APP_MODE": "demo",
+    "GARDEN_STALE_AFTER_DAYS": "90",
+    "GARDEN_REQUIRED_METADATA_KEYS": "[\"status\",\"tags\"]",
+    "GARDEN_OBSOLETE_TERMS": "[{\"term\":\"Node.js 24\",\"replacement\":\"the currently supported runtime\"}]",
+    "DEMO_RETENTION_DAYS": "7",
   },
   "ai": {
     "binding": "AI",
@@ -32,8 +36,8 @@
   "d1_databases": [
     {
       "binding": "DB",
-      "database_name": "knowledge-gardener-demo-local",
-      "database_id": "00000000-0000-0000-0000-000000000000",
+      "database_name": "knowledge-gardener-demo",
+      "database_id": "e12a9a48-d11b-4a5e-bf4e-6c147f51930c",
       "migrations_dir": "migrations",
     },
   ],
@@ -44,18 +48,21 @@
       "fallthrough": true,
     },
   ],
-  "workflows": [
-    {
-      "name": "engineering-knowledge-gardener-sync-demo",
-      "binding": "KNOWLEDGE_SYNC",
-      "class_name": "KnowledgeSyncWorkflow",
-    },
-  ],
+  "triggers": {
+    "crons": ["0 3 * * *"],
+  },
   "env": {
     "live": {
       "name": "engineering-knowledge-gardener-api-live",
       "vars": {
         "APP_MODE": "live",
+        "GARDEN_STALE_AFTER_DAYS": "180",
+        "GARDEN_REQUIRED_METADATA_KEYS": "[]",
+        "GARDEN_OBSOLETE_TERMS": "[]",
+        "DEMO_RETENTION_DAYS": "7",
+      },
+      "triggers": {
+        "crons": [],
       },
       "d1_databases": [
         {

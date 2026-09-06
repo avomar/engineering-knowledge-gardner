@@ -16,7 +16,8 @@
     "@knowledge-gardener/domain": "workspace:*",
     "@knowledge-gardener/fixtures": "workspace:*",
     "@knowledge-gardener/source": "workspace:*",
-    "hono": "^4.9.6"
+    "hono": "^4.9.6",
+    "jose": "^6.1.0"
   },
   "devDependencies": {
     "@cloudflare/workers-types": "^5.20260903.1",

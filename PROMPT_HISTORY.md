@@ -382,3 +382,58 @@ This file records substantive prompts used while planning, designing, or coding 
 ## 53 — 2026-09-06 (Asia/Kolkata)
 
 > Commit and push phase 4.
+
+## 54 — 2026-09-06 (Asia/Kolkata)
+
+> Now create plan for phase 5 considering what has already been done. Remember to write the plan file and any ADR first.
+
+## 55 — 2026-09-06 (Asia/Kolkata)
+
+> Make the documentation changes.
+
+## 56 — 2026-09-06 (Asia/Kolkata)
+
+> Implement the approved plan.
+
+## 57 — 2026-09-07 (Asia/Kolkata)
+
+> Guide me step-by-step on what the demo mode is, who will have access to it and how and what the new secrets are and where and how to set them.
+
+## 58 — 2026-09-07 (Asia/Kolkata)
+
+> What are the ACCESS_TEAM_DOMAIN and ACCESS_AUD and why these 2 secrets were added in phase 5?
+
+## 59 — 2026-09-07 (Asia/Kolkata)
+
+> Clean all data from live DB. Then tell me, what is the knowledge base for the demo?
+
+## 60 — 2026-09-07 (Asia/Kolkata)
+
+> Can we instead use the ADRs as a knowledge base so a public user can ask the app about itself? Is it feasbile?
+
+## 61 — 2026-09-07 (Asia/Kolkata)
+
+> Yes, retain the current fictional fixtures for evaluation and make the ADRs and relevant sections of [@README.md](file:///home/avomar/personal/cloudflare-agent/README.md) as the public demo knowledge base.
+
+## 62 — 2026-09-07 (Asia/Kolkata)
+
+> [WARNING] Multiple environments are defined in the Wrangler configuration file, but no target environment was specified for the deploy command.
+>
+> To avoid unintentional changes to the wrong environment, it is recommended to explicitly specify
+> the target environment using the `-e|--env` flag or CLOUDFLARE_ENV env variable.
+> If your intention is to use the top-level environment of your configuration simply pass an empty
+> string to the flag to target such environment. For example `--env=""`.
+>
+> Also, after this demo deployment, it always shows chat history is currently unavailable and garden analysis is temporarily unavailable. Check demo DB for any issues.
+
+## 63 — 2026-09-07 (Asia/Kolkata)
+
+> Why not clear the demo DB and reuse the DEMO_SPACE_ID?
+
+## 64 — 2026-09-07 (Asia/Kolkata)
+
+> Do it
+
+## 65 — 2026-09-07 (Asia/Kolkata)
+
+> Fix this statement in the demo page: "Answers are limited to four controlled engineering documents. Every supported claim should point back to an exact excerpt.". Then, redeploy demo and also commit and push phase 5.

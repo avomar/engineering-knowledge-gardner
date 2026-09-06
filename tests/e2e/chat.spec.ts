@@ -140,6 +140,85 @@ test("shows an explicit insufficient-evidence answer", async ({ page }) => {
   ).toBeVisible();
 });
 
+test("saves answer feedback and clears only after confirmation", async ({
+  page,
+}) => {
+  await page.route("http://127.0.0.1:5173/api/chat", async (route) => {
+    await route.fulfill({ json: chatResponse() });
+  });
+  let feedbackBody: unknown;
+  await page.route("http://127.0.0.1:5173/api/feedback", async (route) => {
+    feedbackBody = route.request().postDataJSON();
+    await route.fulfill({
+      json: { feedback: { rating: 1, correction: null } },
+    });
+  });
+  let cleared = false;
+  await page.route("http://127.0.0.1:5173/api/conversations", async (route) => {
+    cleared = true;
+    await route.fulfill({ json: { deletedConversations: 1 } });
+  });
+  await page.goto("/");
+  await page.getByRole("button", { name: "Why did we choose D1?" }).click();
+  await page.getByRole("button", { name: "Useful" }).click();
+  await expect(page.getByRole("button", { name: "Useful" })).toHaveAttribute(
+    "aria-pressed",
+    "true",
+  );
+  expect(feedbackBody).toMatchObject({
+    messageId: assistantMessageId,
+    rating: 1,
+  });
+
+  page.once("dialog", (dialog) => void dialog.accept());
+  await page.getByRole("button", { name: "Clear history" }).click();
+  await expect(
+    page.getByRole("heading", {
+      name: "Ask what the engineering docs actually say.",
+    }),
+  ).toBeVisible();
+  expect(cleared).toBe(true);
+});
+
+test("runs the demo garden and dismisses an evidence-linked finding", async ({
+  page,
+}) => {
+  let scanned = false;
+  let dismissed = false;
+  await page.route(
+    /http:\/\/127\.0\.0\.1:5173\/api\/garden(?:\?.*)?$/u,
+    async (route) => {
+      await route.fulfill({ json: gardenOverview(scanned, dismissed) });
+    },
+  );
+  await page.route("http://127.0.0.1:5173/api/garden/scans", async (route) => {
+    scanned = true;
+    await route.fulfill({
+      json: { scan: gardenScan(), reused: false },
+    });
+  });
+  await page.route(
+    `http://127.0.0.1:5173/api/garden/findings/${documentId}`,
+    async (route) => {
+      dismissed = true;
+      await route.fulfill({ json: gardenFinding("dismissed") });
+    },
+  );
+
+  await page.goto("/");
+  await page.getByRole("button", { name: "Garden" }).click();
+  await expect(
+    page.getByRole("heading", { name: "Review the knowledge garden." }),
+  ).toBeVisible();
+  await page.getByRole("button", { name: "Scan garden" }).click();
+  await expect(
+    page.getByRole("heading", { name: "Document may need a freshness review" }),
+  ).toBeVisible();
+  await expect(page.getByText("Review suggestion")).toBeVisible();
+  await page.getByRole("button", { name: "Dismiss" }).click();
+  await expect(page.getByRole("button", { name: "Reopen" })).toBeVisible();
+});
+
 function chatResponse() {
   const createdAt = "2026-09-05T08:00:00.000Z";
   return {
@@ -180,5 +259,69 @@ function chatResponse() {
       unansweredQuestions: [],
       createdAt,
     },
+  };
+}
+
+function gardenScan() {
+  return {
+    id: chunkId,
+    status: "completed",
+    aiStatus: "degraded",
+    findingCount: 1,
+    aiEnrichedCount: 0,
+    errorCode: null,
+    startedAt: "2026-09-05T08:00:00.000Z",
+    completedAt: "2026-09-05T08:00:01.000Z",
+  };
+}
+
+function gardenFinding(status: "open" | "dismissed") {
+  const timestamp = "2026-09-05T08:00:01.000Z";
+  return {
+    id: documentId,
+    fingerprint: "a".repeat(64),
+    signalType: "stale_document",
+    severity: "medium",
+    status,
+    version: status === "open" ? 1 : 2,
+    title: "Document may need a freshness review",
+    reason: "Last edited more than 90 days ago.",
+    recommendation: "Review whether this guidance is still current.",
+    evidence: [
+      {
+        documentId,
+        sourcePageId: "storage-adr",
+        title: "ADR: Storage Responsibilities",
+        sourceUrl: "demo://documents/storage-adr",
+        lastEditedAt: "2026-01-01T00:00:00.000Z",
+        detail: "Last edited more than 90 days ago.",
+      },
+    ],
+    aiEnriched: false,
+    firstDetectedAt: timestamp,
+    lastDetectedAt: timestamp,
+    dismissedAt: status === "dismissed" ? timestamp : null,
+    resolvedAt: null,
+    updatedAt: timestamp,
+  };
+}
+
+function gardenOverview(scanned: boolean, dismissed: boolean) {
+  return {
+    policy: {
+      staleAfterDays: 90,
+      requiredMetadataKeys: ["status", "tags"],
+      obsoleteTerms: [
+        { term: "Node.js 24", replacement: "the supported runtime" },
+      ],
+    },
+    latestScan: scanned ? gardenScan() : null,
+    counts: {
+      open: scanned && !dismissed ? 1 : 0,
+      dismissed: dismissed ? 1 : 0,
+      resolved: 0,
+    },
+    items: scanned ? [gardenFinding(dismissed ? "dismissed" : "open")] : [],
+    nextCursor: null,
   };
 }

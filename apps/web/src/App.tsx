@@ -4,8 +4,12 @@ import {
   conversationMessagesResponseSchema,
   documentSearchResponseSchema,
   draftListResponseSchema,
-  draftSchema,
+  feedbackResponseSchema,
+  gardenFindingSchema,
+  gardenOverviewSchema,
+  gardenScanResponseSchema,
   publishDraftResponseSchema,
+  publicDraftSchema,
   healthResponseSchema,
   idSchema,
   syncDetailResponseSchema,
@@ -13,8 +17,10 @@ import {
   syncStartResponseSchema,
   type ChatMessage,
   type DocumentSearchItem,
-  type Draft,
+  type GardenFinding,
+  type GardenOverview,
   type HealthResponse,
+  type PublicDraft,
   type SyncOverviewResponse,
   type SyncRun,
   type SyncRunDocument,
@@ -39,12 +45,13 @@ const conversationStorageKey = "knowledge-gardener.active-conversation-id";
 const maximumQuestionLength = 2_000;
 const starters = [
   "Why did we choose D1?",
-  "How was the connection incident mitigated?",
-  "How do I run this project locally?",
+  "Why does live mode validate Cloudflare Access JWTs?",
+  "How does the app publish drafts safely to Notion?",
   "What did we decide about Kubernetes?",
 ] as const;
 
 export function App() {
+  const [demoView, setDemoView] = useState<"chat" | "garden">("chat");
   const [health, setHealth] = useState<HealthState>({ kind: "loading" });
   const [sessionId] = useState(getOrCreateSessionId);
   const [conversationId, setConversationId] = useState<string | null>(
@@ -206,6 +213,29 @@ export function App() {
     setError(null);
   }
 
+  async function clearHistory(): Promise<void> {
+    if (!window.confirm("Delete all chat history for this browser session?"))
+      return;
+    try {
+      const response = await fetch(`${apiBaseUrl}/conversations`, {
+        method: "DELETE",
+        headers: {
+          "Content-Type": "application/json",
+          "X-Client-Session-Id": sessionId,
+        },
+        body: JSON.stringify({ confirmed: true }),
+      });
+      if (!response.ok)
+        throw apiFailure(
+          await response.json(),
+          "History could not be cleared.",
+        );
+      startNewChat();
+    } catch (caught) {
+      setError(messageFrom(caught, "History could not be cleared."));
+    }
+  }
+
   const remaining = maximumQuestionLength - question.length;
   const readyToSend =
     question.trim().length > 0 && remaining >= 0 && !sending && !restoring;
@@ -238,11 +268,29 @@ export function App() {
           <div className="flex items-center gap-2">
             <HealthBadge health={health} retry={() => void checkHealth()} />
             <button
+              className="rounded-lg border border-white/10 px-3 py-2 text-xs font-semibold text-stone-300"
+              onClick={() =>
+                setDemoView((current) =>
+                  current === "chat" ? "garden" : "chat",
+                )
+              }
+              type="button"
+            >
+              {demoView === "chat" ? "Garden" : "Chat"}
+            </button>
+            <button
               className="rounded-lg border border-white/10 px-3 py-2 text-xs font-semibold text-stone-300 transition hover:border-white/25 hover:text-white focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-emerald-300"
               onClick={startNewChat}
               type="button"
             >
               New chat
+            </button>
+            <button
+              className="hidden rounded-lg px-3 py-2 text-xs font-semibold text-rose-200 sm:block"
+              onClick={() => void clearHistory()}
+              type="button"
+            >
+              Clear history
             </button>
           </div>
         </header>
@@ -253,8 +301,8 @@ export function App() {
               Grounded answers
             </p>
             <p className="mt-3 text-sm leading-6 text-stone-500">
-              Answers are limited to four controlled engineering documents.
-              Every supported claim should point back to an exact excerpt.
+              Answers are grounded in allowlisted public project documentation.
+              Every supported claim points back to an exact excerpt.
             </p>
             <div className="mt-6 border-t border-white/10 pt-5 text-xs leading-5 text-stone-600">
               Workers AI · D1 memory
@@ -263,90 +311,102 @@ export function App() {
             </div>
           </aside>
 
-          <div className="flex min-h-[calc(100vh-8.5rem)] min-w-0 flex-col rounded-3xl border border-white/10 bg-white/[0.025] shadow-2xl shadow-black/20">
-            <div
-              aria-live="polite"
-              className="flex-1 overflow-y-auto px-4 py-6 sm:px-7"
-              role="log"
-            >
-              {restoring ? (
-                <StatusMessage>Restoring this conversation…</StatusMessage>
-              ) : messages.length === 0 ? (
-                <EmptyState onSelect={(prompt) => void sendQuestion(prompt)} />
-              ) : (
-                <div className="space-y-7">
-                  {messages.map((message) => (
-                    <MessageCard key={message.id} message={message} />
-                  ))}
-                </div>
-              )}
-              {sending ? (
-                <StatusMessage>Searching the demo sources…</StatusMessage>
-              ) : null}
-              <div ref={endOfMessages} />
+          {demoView === "garden" ? (
+            <div className="min-w-0 rounded-3xl border border-white/10 bg-white/[0.025] p-5 shadow-2xl shadow-black/20 sm:p-7">
+              <GardenView sessionStorageKey={sessionStorageKey} />
             </div>
-
-            <div className="border-t border-white/10 p-4 sm:p-5">
-              {error === null ? null : (
-                <div
-                  className="mb-3 flex items-center justify-between gap-4 rounded-xl bg-rose-400/10 px-4 py-3 text-sm text-rose-200"
-                  role="alert"
-                >
-                  <span>{error}</span>
-                  <button
-                    className="shrink-0 font-semibold underline underline-offset-4"
-                    disabled={!readyToSend}
-                    onClick={() => void sendQuestion(question)}
-                    type="button"
-                  >
-                    Try again
-                  </button>
-                </div>
-              )}
-              <form onSubmit={submit}>
-                <label className="sr-only" htmlFor="question">
-                  Ask the engineering knowledge base
-                </label>
-                <div className="rounded-2xl border border-white/10 bg-black/20 p-3 focus-within:border-emerald-300/50">
-                  <textarea
-                    className="max-h-40 min-h-20 w-full resize-y bg-transparent px-1 text-[0.95rem] leading-6 text-stone-100 outline-none placeholder:text-stone-600"
-                    disabled={restoring}
-                    id="question"
-                    maxLength={maximumQuestionLength}
-                    onChange={(event) => setQuestion(event.target.value)}
-                    onKeyDown={handleComposerKeyDown}
-                    placeholder="Ask about an architecture decision, incident, runbook, or setup…"
-                    value={question}
+          ) : (
+            <div className="flex min-h-[calc(100vh-8.5rem)] min-w-0 flex-col rounded-3xl border border-white/10 bg-white/[0.025] shadow-2xl shadow-black/20">
+              <div
+                aria-live="polite"
+                className="flex-1 overflow-y-auto px-4 py-6 sm:px-7"
+                role="log"
+              >
+                {restoring ? (
+                  <StatusMessage>Restoring this conversation…</StatusMessage>
+                ) : messages.length === 0 ? (
+                  <EmptyState
+                    onSelect={(prompt) => void sendQuestion(prompt)}
                   />
-                  <div className="mt-2 flex items-center justify-between gap-4">
-                    <span
-                      className={`text-xs ${remaining < 100 ? "text-amber-300" : "text-stone-600"}`}
-                    >
-                      {remaining.toLocaleString()} characters left
-                    </span>
+                ) : (
+                  <div className="space-y-7">
+                    {messages.map((message) => (
+                      <MessageCard
+                        key={message.id}
+                        message={message}
+                        sessionId={sessionId}
+                      />
+                    ))}
+                  </div>
+                )}
+                {sending ? (
+                  <StatusMessage>Searching the demo sources…</StatusMessage>
+                ) : null}
+                <div ref={endOfMessages} />
+              </div>
+
+              <div className="border-t border-white/10 p-4 sm:p-5">
+                {error === null ? null : (
+                  <div
+                    className="mb-3 flex items-center justify-between gap-4 rounded-xl bg-rose-400/10 px-4 py-3 text-sm text-rose-200"
+                    role="alert"
+                  >
+                    <span>{error}</span>
                     <button
-                      className="rounded-xl bg-emerald-300 px-4 py-2 text-sm font-bold text-emerald-950 transition hover:bg-emerald-200 disabled:cursor-not-allowed disabled:opacity-40 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-emerald-300"
+                      className="shrink-0 font-semibold underline underline-offset-4"
                       disabled={!readyToSend}
-                      type="submit"
+                      onClick={() => void sendQuestion(question)}
+                      type="button"
                     >
-                      {sending ? "Answering…" : "Ask"}
+                      Try again
                     </button>
                   </div>
-                </div>
-              </form>
-              <p className="mt-3 text-center text-[0.68rem] text-stone-600">
-                Demo answers may be incomplete. Verify the cited fictional
-                sources.
-              </p>
+                )}
+                <form onSubmit={submit}>
+                  <label className="sr-only" htmlFor="question">
+                    Ask the engineering knowledge base
+                  </label>
+                  <div className="rounded-2xl border border-white/10 bg-black/20 p-3 focus-within:border-emerald-300/50">
+                    <textarea
+                      className="max-h-40 min-h-20 w-full resize-y bg-transparent px-1 text-[0.95rem] leading-6 text-stone-100 outline-none placeholder:text-stone-600"
+                      disabled={restoring}
+                      id="question"
+                      maxLength={maximumQuestionLength}
+                      onChange={(event) => setQuestion(event.target.value)}
+                      onKeyDown={handleComposerKeyDown}
+                      placeholder="Ask about an architecture decision, incident, runbook, or setup…"
+                      value={question}
+                    />
+                    <div className="mt-2 flex items-center justify-between gap-4">
+                      <span
+                        className={`text-xs ${remaining < 100 ? "text-amber-300" : "text-stone-600"}`}
+                      >
+                        {remaining.toLocaleString()} characters left
+                      </span>
+                      <button
+                        className="rounded-xl bg-emerald-300 px-4 py-2 text-sm font-bold text-emerald-950 transition hover:bg-emerald-200 disabled:cursor-not-allowed disabled:opacity-40 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-emerald-300"
+                        disabled={!readyToSend}
+                        type="submit"
+                      >
+                        {sending ? "Answering…" : "Ask"}
+                      </button>
+                    </div>
+                  </div>
+                </form>
+                <p className="mt-3 text-center text-[0.68rem] text-stone-600">
+                  Demo answers may be incomplete. Verify the cited fictional
+                  sources.
+                </p>
+              </div>
             </div>
-          </div>
+          )}
         </section>
       </div>
     </main>
   );
 }
 
-type LiveView = "chat" | "sync" | "sources" | "drafts";
+type LiveView = "chat" | "sync" | "sources" | "garden" | "drafts";
 
 function LiveWorkspace({
   configured,
@@ -464,16 +524,18 @@ function LiveWorkspace({
         </header>
         <div className="grid gap-8 py-7 lg:grid-cols-[14rem_minmax(0,1fr)]">
           <nav aria-label="Live workspace" className="space-y-2">
-            {(["chat", "sync", "sources", "drafts"] as const).map((item) => (
-              <button
-                className={`w-full rounded-xl px-4 py-3 text-left text-sm font-semibold capitalize ${view === item ? "bg-emerald-300 text-emerald-950" : "text-stone-400 hover:bg-white/5 hover:text-white"}`}
-                key={item}
-                onClick={() => setView(item)}
-                type="button"
-              >
-                {item}
-              </button>
-            ))}
+            {(["chat", "sync", "sources", "garden", "drafts"] as const).map(
+              (item) => (
+                <button
+                  className={`w-full rounded-xl px-4 py-3 text-left text-sm font-semibold capitalize ${view === item ? "bg-emerald-300 text-emerald-950" : "text-stone-400 hover:bg-white/5 hover:text-white"}`}
+                  key={item}
+                  onClick={() => setView(item)}
+                  type="button"
+                >
+                  {item}
+                </button>
+              ),
+            )}
             <div className="mt-6 border-t border-white/10 pt-5 text-xs leading-5 text-stone-600">
               Answers are grounded in your indexed Notion sources. Verify
               important decisions against the cited page.
@@ -509,6 +571,8 @@ function LiveWorkspace({
               />
             ) : view === "sources" ? (
               <SourcesView />
+            ) : view === "garden" ? (
+              <GardenView sessionStorageKey={liveSessionStorageKey} />
             ) : (
               <DraftsView />
             )}
@@ -620,12 +684,38 @@ function LiveChat({
       const raw: unknown = await response.json();
       if (!response.ok)
         throw apiFailure(raw, "The draft could not be created.");
-      draftSchema.parse(raw);
+      publicDraftSchema.parse(raw);
       onOpenDrafts();
     } catch (caught) {
       setError(messageFrom(caught, "The draft could not be created."));
     } finally {
       setDraftingId(null);
+    }
+  }
+
+  async function clearHistory() {
+    if (!window.confirm("Delete all chat history for this browser session?"))
+      return;
+    try {
+      const response = await fetch(`${apiBaseUrl}/conversations`, {
+        method: "DELETE",
+        headers: {
+          "Content-Type": "application/json",
+          "X-Client-Session-Id": sessionId,
+        },
+        body: JSON.stringify({ confirmed: true }),
+      });
+      if (!response.ok)
+        throw apiFailure(
+          await response.json(),
+          "History could not be cleared.",
+        );
+      localStorage.removeItem(liveConversationStorageKey);
+      setConversationId(null);
+      setMessages([]);
+      setError(null);
+    } catch (caught) {
+      setError(messageFrom(caught, "History could not be cleared."));
     }
   }
 
@@ -671,6 +761,7 @@ function LiveChat({
               live
               message={message}
               onCreateDraft={createDraft}
+              sessionId={sessionId}
             />
           ))
         )}
@@ -708,17 +799,26 @@ function LiveChat({
           value={question}
         />
         <div className="mt-3 flex justify-between gap-3">
-          <button
-            className="rounded-xl border border-white/10 px-4 py-2 text-sm"
-            onClick={() => {
-              localStorage.removeItem(liveConversationStorageKey);
-              setConversationId(null);
-              setMessages([]);
-            }}
-            type="button"
-          >
-            New chat
-          </button>
+          <div className="flex gap-2">
+            <button
+              className="rounded-xl border border-white/10 px-4 py-2 text-sm"
+              onClick={() => {
+                localStorage.removeItem(liveConversationStorageKey);
+                setConversationId(null);
+                setMessages([]);
+              }}
+              type="button"
+            >
+              New chat
+            </button>
+            <button
+              className="rounded-xl px-3 py-2 text-sm text-rose-200"
+              onClick={() => void clearHistory()}
+              type="button"
+            >
+              Clear history
+            </button>
+          </div>
           <button
             className="rounded-xl bg-emerald-300 px-4 py-2 text-sm font-bold text-emerald-950 disabled:opacity-40"
             disabled={sending || question.trim().length === 0}
@@ -734,8 +834,8 @@ function LiveChat({
 
 function DraftsView() {
   const [sessionId] = useState(() => getOrCreateId(liveSessionStorageKey));
-  const [drafts, setDrafts] = useState<Draft[]>([]);
-  const [selected, setSelected] = useState<Draft | null>(null);
+  const [drafts, setDrafts] = useState<PublicDraft[]>([]);
+  const [selected, setSelected] = useState<PublicDraft | null>(null);
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -803,7 +903,7 @@ function DraftsView() {
       setSelected(
         action === "publish"
           ? publishDraftResponseSchema.parse(raw).draft
-          : draftSchema.parse(raw),
+          : publicDraftSchema.parse(raw),
       );
       await load();
     } catch (caught) {
@@ -891,14 +991,76 @@ function DraftsView() {
                 }
                 value={selected.contentMarkdown}
               />
-              <p className="mt-4 text-xs text-stone-500">
-                Frozen sources:{" "}
-                {selected.sources.map((source) => source.title).join(", ")}
-              </p>
-              {selected.notionUrl === null ? null : (
+              <label
+                className="mt-5 block text-xs text-stone-500"
+                htmlFor="draft-assumptions"
+              >
+                Assumptions, one per line
+              </label>
+              <textarea
+                className="mt-2 min-h-28 w-full rounded-xl border border-white/10 bg-black/20 p-3 text-sm leading-6 outline-none"
+                disabled={selected.status !== "pending"}
+                id="draft-assumptions"
+                maxLength={10000}
+                onChange={(event) =>
+                  setSelected({
+                    ...selected,
+                    assumptions: event.target.value
+                      .split("\n")
+                      .map((item) => item.trim())
+                      .filter(Boolean)
+                      .slice(0, 10),
+                  })
+                }
+                value={selected.assumptions.join("\n")}
+              />
+              <div className="mt-5 space-y-3">
+                <p className="text-xs font-semibold uppercase tracking-wider text-stone-500">
+                  Frozen source evidence
+                </p>
+                {selected.sources.map((source) => {
+                  const sourceUrl = safeLiveSourceUrl(source.sourceUrl);
+                  return (
+                    <div
+                      className="rounded-xl border border-white/10 p-3"
+                      key={source.chunkId}
+                    >
+                      <div className="flex items-center justify-between gap-3">
+                        {sourceUrl === null ? (
+                          <span className="text-sm font-semibold text-stone-200">
+                            {source.title}
+                          </span>
+                        ) : (
+                          <a
+                            className="text-sm font-semibold text-emerald-200 hover:underline"
+                            href={sourceUrl}
+                            rel="noopener noreferrer"
+                            target="_blank"
+                          >
+                            {source.title}
+                          </a>
+                        )}
+                        <span className="text-xs text-stone-500">
+                          {source.sourceState}
+                        </span>
+                      </div>
+                      <blockquote className="mt-2 border-l-2 border-emerald-300/40 pl-3 text-xs leading-5 text-stone-400">
+                        “{source.quote}”
+                      </blockquote>
+                    </div>
+                  );
+                })}
+              </div>
+              <FeedbackControls
+                initial={selected.feedback}
+                key={selected.id}
+                sessionId={sessionId}
+                target={{ draftId: selected.id }}
+              />
+              {safeLiveSourceUrl(selected.notionUrl) === null ? null : (
                 <a
                   className="mt-3 inline-block text-sm font-semibold text-emerald-200 hover:underline"
-                  href={selected.notionUrl}
+                  href={safeLiveSourceUrl(selected.notionUrl)!}
                   rel="noopener noreferrer"
                   target="_blank"
                 >
@@ -935,6 +1097,234 @@ function DraftsView() {
               ) : null}
             </article>
           )}
+        </div>
+      )}
+    </div>
+  );
+}
+
+function GardenView({ sessionStorageKey }: { sessionStorageKey: string }) {
+  const [sessionId] = useState(() => getOrCreateId(sessionStorageKey));
+  const [overview, setOverview] = useState<GardenOverview | null>(null);
+  const [status, setStatus] = useState("open");
+  const [type, setType] = useState("");
+  const [loading, setLoading] = useState(true);
+  const [scanning, setScanning] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+
+  const load = useCallback(async () => {
+    setLoading(true);
+    try {
+      const query = new URLSearchParams({ limit: "50" });
+      if (status) query.set("status", status);
+      if (type) query.set("type", type);
+      const response = await fetch(`${apiBaseUrl}/garden?${query}`, {
+        headers: { "X-Client-Session-Id": sessionId },
+      });
+      const raw: unknown = await response.json();
+      if (!response.ok) throw apiFailure(raw, "Garden could not be loaded.");
+      setOverview(gardenOverviewSchema.parse(raw));
+      setError(null);
+    } catch (caught) {
+      setError(messageFrom(caught, "Garden could not be loaded."));
+    } finally {
+      setLoading(false);
+    }
+  }, [sessionId, status, type]);
+
+  useEffect(() => {
+    void load();
+  }, [load]);
+
+  async function scan() {
+    if (scanning) return;
+    setScanning(true);
+    setError(null);
+    try {
+      const response = await fetch(`${apiBaseUrl}/garden/scans`, {
+        method: "POST",
+        headers: { "X-Client-Session-Id": sessionId },
+      });
+      const raw: unknown = await response.json();
+      if (!response.ok) throw apiFailure(raw, "Garden scan could not finish.");
+      gardenScanResponseSchema.parse(raw);
+      await load();
+    } catch (caught) {
+      setError(messageFrom(caught, "Garden scan could not finish."));
+    } finally {
+      setScanning(false);
+    }
+  }
+
+  async function setFindingStatus(
+    finding: GardenFinding,
+    next: "open" | "dismissed",
+  ) {
+    try {
+      const response = await fetch(
+        `${apiBaseUrl}/garden/findings/${finding.id}`,
+        {
+          method: "PATCH",
+          headers: {
+            "Content-Type": "application/json",
+            "X-Client-Session-Id": sessionId,
+          },
+          body: JSON.stringify({ status: next, version: finding.version }),
+        },
+      );
+      const raw: unknown = await response.json();
+      if (!response.ok) throw apiFailure(raw, "Finding could not be updated.");
+      gardenFindingSchema.parse(raw);
+      await load();
+    } catch (caught) {
+      setError(messageFrom(caught, "Finding could not be updated."));
+    }
+  }
+
+  return (
+    <div>
+      <div className="flex flex-wrap items-end justify-between gap-4">
+        <div>
+          <p className="font-mono text-xs uppercase tracking-[0.2em] text-emerald-300">
+            Documentation health
+          </p>
+          <h1 className="mt-3 text-3xl font-semibold tracking-tight">
+            Review the knowledge garden.
+          </h1>
+          <p className="mt-3 max-w-2xl text-sm leading-6 text-stone-400">
+            Deterministic signals identify review candidates. One bounded AI
+            request phrases the recommendations; findings are not confirmed
+            defects.
+          </p>
+        </div>
+        <button
+          className="rounded-xl bg-emerald-300 px-5 py-3 text-sm font-bold text-emerald-950 disabled:opacity-40"
+          disabled={scanning}
+          onClick={() => void scan()}
+          type="button"
+        >
+          {scanning ? "Scanning…" : "Scan garden"}
+        </button>
+      </div>
+      {overview === null ? null : (
+        <div className="mt-6 grid gap-3 sm:grid-cols-4">
+          <Metric label="Open" value={overview.counts.open} />
+          <Metric label="Dismissed" value={overview.counts.dismissed} />
+          <Metric label="Resolved" value={overview.counts.resolved} />
+          <Metric
+            label="Review age"
+            value={`${overview.policy.staleAfterDays}d`}
+          />
+        </div>
+      )}
+      {overview?.latestScan?.aiStatus === "degraded" ? (
+        <Notice title="AI wording unavailable">
+          The deterministic scan completed and template recommendations are
+          shown.
+        </Notice>
+      ) : null}
+      <div className="mt-5 flex flex-wrap gap-3">
+        <select
+          aria-label="Filter finding status"
+          className="rounded-xl border border-white/10 bg-[#151816] px-3 py-2 text-sm"
+          onChange={(event) => setStatus(event.target.value)}
+          value={status}
+        >
+          <option value="">All states</option>
+          <option value="open">Open</option>
+          <option value="dismissed">Dismissed</option>
+          <option value="resolved">Resolved</option>
+        </select>
+        <select
+          aria-label="Filter finding type"
+          className="rounded-xl border border-white/10 bg-[#151816] px-3 py-2 text-sm"
+          onChange={(event) => setType(event.target.value)}
+          value={type}
+        >
+          <option value="">All signal types</option>
+          <option value="stale_document">Document age</option>
+          <option value="missing_metadata">Missing metadata</option>
+          <option value="title_collision">Title collision</option>
+          <option value="obsolete_keyword">Obsolete keyword</option>
+        </select>
+      </div>
+      {error === null ? null : (
+        <p className="mt-4 text-sm text-rose-200" role="alert">
+          {error}
+        </p>
+      )}
+      {loading ? (
+        <StatusMessage>Loading garden findings…</StatusMessage>
+      ) : overview?.items.length === 0 ? (
+        <Notice title="No matching review suggestions">
+          Run a scan or adjust the finding filters.
+        </Notice>
+      ) : (
+        <div className="mt-6 space-y-4">
+          {overview?.items.map((finding) => (
+            <article
+              className="rounded-2xl border border-white/10 bg-white/[0.025] p-5"
+              key={finding.id}
+            >
+              <div className="flex flex-wrap items-center gap-2">
+                <span className="rounded-full bg-amber-300/10 px-2 py-1 text-[0.65rem] font-semibold uppercase text-amber-200">
+                  Review suggestion
+                </span>
+                <span className="text-xs text-stone-500">
+                  {finding.signalType.replaceAll("_", " ")} · {finding.severity}
+                </span>
+                {finding.aiEnriched ? (
+                  <span className="text-xs text-emerald-300">AI phrased</span>
+                ) : null}
+              </div>
+              <h2 className="mt-3 text-lg font-semibold">{finding.title}</h2>
+              <p className="mt-2 text-sm leading-6 text-stone-400">
+                {finding.reason}
+              </p>
+              <p className="mt-3 text-sm leading-6 text-stone-200">
+                {finding.recommendation}
+              </p>
+              <div className="mt-4 space-y-2">
+                {finding.evidence.map((item) => {
+                  const link = safeLiveSourceUrl(item.sourceUrl);
+                  return (
+                    <div
+                      className="rounded-xl border border-white/10 px-3 py-2 text-xs text-stone-400"
+                      key={`${finding.id}:${item.documentId}`}
+                    >
+                      {link === null ? (
+                        <span className="font-semibold text-stone-200">
+                          {item.title}
+                        </span>
+                      ) : (
+                        <a
+                          className="font-semibold text-emerald-200 hover:underline"
+                          href={link}
+                          rel="noopener noreferrer"
+                          target="_blank"
+                        >
+                          {item.title}
+                        </a>
+                      )}
+                      <span className="ml-2">{item.detail}</span>
+                    </div>
+                  );
+                })}
+              </div>
+              <button
+                className="mt-4 rounded-lg border border-white/10 px-3 py-2 text-xs"
+                onClick={() =>
+                  void setFindingStatus(
+                    finding,
+                    finding.status === "open" ? "dismissed" : "open",
+                  )
+                }
+                type="button"
+              >
+                {finding.status === "open" ? "Dismiss" : "Reopen"}
+              </button>
+            </article>
+          ))}
         </div>
       )}
     </div>
@@ -1059,7 +1449,73 @@ function SyncView({
           ) : null}
         </>
       )}
+      <IndexResetPanel />
     </div>
+  );
+}
+
+function IndexResetPanel() {
+  const [sessionId] = useState(() => getOrCreateId(liveSessionStorageKey));
+  const [confirmation, setConfirmation] = useState("");
+  const [working, setWorking] = useState(false);
+  const [message, setMessage] = useState<string | null>(null);
+  async function reset() {
+    if (confirmation !== "RESET INDEX" || working) return;
+    setWorking(true);
+    setMessage(null);
+    try {
+      const response = await fetch(`${apiBaseUrl}/maintenance/index-reset`, {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          "X-Client-Session-Id": sessionId,
+        },
+        body: JSON.stringify({ confirmation }),
+      });
+      const raw: unknown = await response.json();
+      if (!response.ok) throw apiFailure(raw, "The index could not be reset.");
+      setMessage(
+        "Indexed source data was reset. Existing chats and drafts were preserved; run synchronization before using chat again.",
+      );
+      setConfirmation("");
+    } catch (caught) {
+      setMessage(messageFrom(caught, "The index could not be reset."));
+    } finally {
+      setWorking(false);
+    }
+  }
+  return (
+    <section className="mt-10 border-t border-white/10 pt-6">
+      <h2 className="text-sm font-semibold text-rose-200">
+        Reset source index
+      </h2>
+      <p className="mt-2 max-w-2xl text-xs leading-5 text-stone-500">
+        Removes synchronized D1, FTS, Vectorize, sync, and garden data. Chats,
+        drafts, their source snapshots, audit history, and Notion pages remain.
+      </p>
+      <div className="mt-3 flex flex-wrap gap-2">
+        <input
+          aria-label="Type RESET INDEX to confirm"
+          className="rounded-lg border border-white/10 bg-black/20 px-3 py-2 text-sm"
+          onChange={(event) => setConfirmation(event.target.value)}
+          placeholder="RESET INDEX"
+          value={confirmation}
+        />
+        <button
+          className="rounded-lg bg-rose-300 px-3 py-2 text-sm font-bold text-rose-950 disabled:opacity-40"
+          disabled={confirmation !== "RESET INDEX" || working}
+          onClick={() => void reset()}
+          type="button"
+        >
+          {working ? "Resetting…" : "Reset index"}
+        </button>
+      </div>
+      {message === null ? null : (
+        <p className="mt-3 text-xs text-stone-400" role="status">
+          {message}
+        </p>
+      )}
+    </section>
   );
 }
 
@@ -1219,7 +1675,7 @@ function SourceRow({ item }: { item: DocumentSearchItem }) {
   );
 }
 
-function Metric({ label, value }: { label: string; value: number }) {
+function Metric({ label, value }: { label: string; value: number | string }) {
   return (
     <div className="rounded-xl bg-black/20 px-3 py-3">
       <p className="text-xl font-semibold">{value}</p>
@@ -1273,15 +1729,14 @@ function EmptyState({ onSelect }: { onSelect: (prompt: string) => void }) {
   return (
     <div className="mx-auto flex min-h-[18rem] max-w-2xl flex-col justify-center">
       <p className="font-mono text-xs uppercase tracking-[0.2em] text-emerald-300">
-        Explore the fixture garden
+        Explore the project knowledge garden
       </p>
       <h1 className="mt-4 text-3xl font-semibold tracking-tight text-balance sm:text-4xl">
         Ask what the engineering docs actually say.
       </h1>
       <p className="mt-4 max-w-xl leading-7 text-stone-400">
-        This public-safe demo answers from controlled architecture, incident,
-        deployment, and onboarding notes—and refuses questions they cannot
-        support.
+        This public-safe demo answers from allowlisted project ADRs and README
+        sections—and refuses questions they cannot support.
       </p>
       <div className="mt-6 grid gap-3 sm:grid-cols-2">
         {starters.map((prompt) => (
@@ -1304,11 +1759,13 @@ function MessageCard({
   live = false,
   message,
   onCreateDraft,
+  sessionId,
 }: {
   drafting?: boolean;
   live?: boolean;
   message: ChatMessage;
   onCreateDraft?: (messageId: string) => void;
+  sessionId: string;
 }) {
   if (message.role === "user") {
     return (
@@ -1379,6 +1836,11 @@ function MessageCard({
           {drafting ? "Creating draft…" : "Create draft"}
         </button>
       ) : null}
+      <FeedbackControls
+        initial={message.feedback}
+        sessionId={sessionId}
+        target={{ messageId: message.id }}
+      />
       {message.unansweredQuestions.length > 0 ? (
         <div className="mt-4 rounded-xl bg-amber-300/[0.06] px-4 py-3">
           <p className="text-xs font-semibold uppercase tracking-wider text-amber-200">
@@ -1392,6 +1854,102 @@ function MessageCard({
         </div>
       ) : null}
     </article>
+  );
+}
+
+function FeedbackControls({
+  initial,
+  sessionId,
+  target,
+}: {
+  initial: { rating: -1 | 1; correction: string | null } | null;
+  sessionId: string;
+  target: { messageId: string } | { draftId: string };
+}) {
+  const [feedback, setFeedback] = useState(initial);
+  const [correction, setCorrection] = useState(initial?.correction ?? "");
+  const [saving, setSaving] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+
+  async function save(rating: -1 | 1) {
+    if (saving) return;
+    setSaving(true);
+    setError(null);
+    try {
+      const response = await fetch(`${apiBaseUrl}/feedback`, {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          "X-Client-Session-Id": sessionId,
+        },
+        body: JSON.stringify({
+          ...target,
+          rating,
+          ...(rating === -1 && correction.trim() !== ""
+            ? { correction: correction.trim() }
+            : {}),
+        }),
+      });
+      const raw: unknown = await response.json();
+      if (!response.ok) throw apiFailure(raw, "Feedback could not be saved.");
+      setFeedback(feedbackResponseSchema.parse(raw).feedback);
+      if (rating === 1) setCorrection("");
+    } catch (caught) {
+      setError(messageFrom(caught, "Feedback could not be saved."));
+    } finally {
+      setSaving(false);
+    }
+  }
+
+  return (
+    <div className="mt-4 rounded-xl border border-white/10 p-3">
+      <div className="flex items-center gap-2 text-xs text-stone-500">
+        <span>Was this useful?</span>
+        <button
+          aria-pressed={feedback?.rating === 1}
+          className={`rounded-lg px-2 py-1 ${feedback?.rating === 1 ? "bg-emerald-300/20 text-emerald-200" : "hover:bg-white/5"}`}
+          disabled={saving}
+          onClick={() => void save(1)}
+          type="button"
+        >
+          Useful
+        </button>
+        <button
+          aria-pressed={feedback?.rating === -1}
+          className={`rounded-lg px-2 py-1 ${feedback?.rating === -1 ? "bg-amber-300/20 text-amber-200" : "hover:bg-white/5"}`}
+          disabled={saving}
+          onClick={() => setFeedback({ rating: -1, correction: null })}
+          type="button"
+        >
+          Needs work
+        </button>
+      </div>
+      {feedback?.rating === -1 ? (
+        <div className="mt-3 flex flex-wrap gap-2">
+          <input
+            aria-label="Optional correction"
+            className="min-w-52 flex-1 rounded-lg border border-white/10 bg-black/20 px-3 py-2 text-xs outline-none"
+            maxLength={2000}
+            onChange={(event) => setCorrection(event.target.value)}
+            placeholder="Optional correction"
+            value={correction}
+          />
+          <button
+            className="rounded-lg border border-white/10 px-3 py-2 text-xs"
+            disabled={saving}
+            onClick={() => void save(-1)}
+            type="button"
+          >
+            Save feedback
+          </button>
+        </div>
+      ) : null}
+      {error === null ? null : (
+        <p className="mt-2 text-xs text-rose-200" role="alert">
+          {error}
+        </p>
+      )}
+    </div>
   );
 }
 

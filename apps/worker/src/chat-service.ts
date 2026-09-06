@@ -87,6 +87,7 @@ export class ChatService {
   async answer(
     ownerSessionId: string,
     request: ChatRequest,
+    rateKey = ownerSessionId,
   ): Promise<ChatResponse> {
     const startedAt = Date.now();
     const requestId = this.createId();
@@ -120,7 +121,7 @@ export class ChatService {
         ? Promise.resolve([])
         : this.repository.listRecentMessages(conversationId, 8));
       const rateLimitConsumed = this.mode === "live";
-      if (rateLimitConsumed) await this.requireRateLimit(ownerSessionId);
+      if (rateLimitConsumed) await this.requireRateLimit(rateKey);
       const retrieval = await this.retrieve(request.question, knowledgeSpaceId);
       const sources = retrieval.chunks;
       this.log({
@@ -134,7 +135,7 @@ export class ChatService {
       if (sources.length === 0) {
         answer = insufficientAnswer;
       } else {
-        if (!rateLimitConsumed) await this.requireRateLimit(ownerSessionId);
+        if (!rateLimitConsumed) await this.requireRateLimit(rateKey);
         answer = await this.generateGroundedAnswer(
           requestId,
           request.question,
@@ -185,7 +186,10 @@ export class ChatService {
         },
       });
       const [userMessage, assistantMessage] =
-        await this.repository.hydrateMessages([user, assistant]);
+        await this.repository.hydrateMessages(
+          [user, assistant],
+          ownerSessionId,
+        );
       if (userMessage === undefined || assistantMessage === undefined) {
         throw new Error("The stored turn could not be hydrated.");
       }
@@ -236,7 +240,10 @@ export class ChatService {
       const messages = await this.repository.listMessages(conversationId);
       return {
         conversationId,
-        messages: await this.repository.hydrateMessages(messages),
+        messages: await this.repository.hydrateMessages(
+          messages,
+          ownerSessionId,
+        ),
       };
     } catch (error) {
       if (error instanceof ChatServiceError) throw error;

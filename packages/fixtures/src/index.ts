@@ -17,6 +17,12 @@ import localSetup from "../documents/local-setup.md";
 import storageAdr from "../documents/storage-adr.md";
 import workerDeployRunbook from "../documents/worker-deploy-runbook.md";
 
+export {
+  PublicDemoSourceAdapter,
+  publicDemoManifest,
+  type PublicDemoManifest,
+} from "./public-demo";
+
 const fixtureDocumentMetadataSchema = z.object({
   sourcePageId: z.string().trim().min(1).max(500),
   title: z.string().trim().min(1).max(500),

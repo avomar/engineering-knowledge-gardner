@@ -252,7 +252,10 @@ export class ChatRepository {
     }
   }
 
-  async hydrateMessages(messages: readonly Message[]): Promise<ChatMessage[]> {
+  async hydrateMessages(
+    messages: readonly Message[],
+    ownerSessionId?: string,
+  ): Promise<ChatMessage[]> {
     const chunkIds = [
       ...new Set(
         messages.flatMap((message) => message.citations.map((c) => c.chunkId)),
@@ -278,6 +281,28 @@ export class ChatRepository {
       }
     }
 
+    const feedback = new Map<
+      string,
+      { rating: number; correction: string | null }
+    >();
+    const messageIds = messages
+      .filter((message) => message.role === "assistant")
+      .map((message) => message.id);
+    if (ownerSessionId !== undefined && messageIds.length > 0) {
+      const rows = await this.database
+        .prepare(
+          `SELECT message_id, rating, correction FROM feedback
+           WHERE owner_session_id = ? AND message_id IN (${messageIds.map(() => "?").join(",")})`,
+        )
+        .bind(ownerSessionId, ...messageIds)
+        .all<{
+          message_id: string;
+          rating: number;
+          correction: string | null;
+        }>();
+      for (const row of rows.results) feedback.set(row.message_id, row);
+    }
+
     return messages.map((message) =>
       chatMessageSchema.parse({
         ...message,
@@ -288,6 +313,17 @@ export class ChatRepository {
           }
           return { ...citation, source };
         }),
+        ...(message.role === "assistant"
+          ? {
+              feedback:
+                feedback.get(message.id) === undefined
+                  ? null
+                  : {
+                      rating: feedback.get(message.id)!.rating,
+                      correction: feedback.get(message.id)!.correction,
+                    },
+            }
+          : {}),
       }),
     );
   }

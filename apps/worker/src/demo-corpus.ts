@@ -1,6 +1,6 @@
 import {
-  FixtureSourceAdapter,
-  fixtureManifest,
+  PublicDemoSourceAdapter,
+  publicDemoManifest,
 } from "@knowledge-gardener/fixtures";
 
 export const DEMO_SPACE_ID = "10000000-0000-4000-8000-000000000001";
@@ -8,21 +8,53 @@ export const DEMO_SPACE_ID = "10000000-0000-4000-8000-000000000001";
 const identifiers: Readonly<
   Record<string, { documentId: string; chunkId: string }>
 > = {
-  "connection-incident": {
+  "readme-product-and-architecture": {
     documentId: "10000000-0000-4000-8000-000000000101",
     chunkId: "10000000-0000-4000-8000-000000000201",
   },
-  "local-setup": {
+  "readme-demo-and-api": {
     documentId: "10000000-0000-4000-8000-000000000102",
     chunkId: "10000000-0000-4000-8000-000000000202",
   },
-  "storage-adr": {
+  "readme-deployment-and-operations": {
     documentId: "10000000-0000-4000-8000-000000000103",
     chunkId: "10000000-0000-4000-8000-000000000203",
   },
-  "worker-deploy-runbook": {
+  "adr-0001-foundation-architecture": {
     documentId: "10000000-0000-4000-8000-000000000104",
     chunkId: "10000000-0000-4000-8000-000000000204",
+  },
+  "adr-0002-grounded-demo-chat": {
+    documentId: "10000000-0000-4000-8000-000000000105",
+    chunkId: "10000000-0000-4000-8000-000000000205",
+  },
+  "adr-0003-live-notion-sync": {
+    documentId: "10000000-0000-4000-8000-000000000106",
+    chunkId: "10000000-0000-4000-8000-000000000206",
+  },
+  "adr-0004-unified-worker-assets": {
+    documentId: "10000000-0000-4000-8000-000000000107",
+    chunkId: "10000000-0000-4000-8000-000000000207",
+  },
+  "adr-0005-hybrid-retrieval": {
+    documentId: "10000000-0000-4000-8000-000000000108",
+    chunkId: "10000000-0000-4000-8000-000000000208",
+  },
+  "adr-0006-safe-draft-publishing": {
+    documentId: "10000000-0000-4000-8000-000000000109",
+    chunkId: "10000000-0000-4000-8000-000000000209",
+  },
+  "adr-0007-garden-findings": {
+    documentId: "10000000-0000-4000-8000-000000000110",
+    chunkId: "10000000-0000-4000-8000-000000000210",
+  },
+  "adr-0008-demo-live-boundaries": {
+    documentId: "10000000-0000-4000-8000-000000000111",
+    chunkId: "10000000-0000-4000-8000-000000000211",
+  },
+  "adr-0009-public-project-docs": {
+    documentId: "10000000-0000-4000-8000-000000000112",
+    chunkId: "10000000-0000-4000-8000-000000000212",
   },
 };
 
@@ -40,7 +72,7 @@ interface KnowledgeSpaceRow {
 }
 
 export class DemoCorpusService {
-  private readonly adapter = new FixtureSourceAdapter();
+  private readonly adapter = new PublicDemoSourceAdapter();
 
   constructor(
     private readonly database: D1Database,
@@ -54,7 +86,7 @@ export class DemoCorpusService {
         `SELECT id, name, mode FROM knowledge_spaces
          WHERE source_type = 'fixture' AND source_root_id = ?`,
       )
-      .bind(fixtureManifest.rootId)
+      .bind(publicDemoManifest.rootId)
       .first<KnowledgeSpaceRow>();
     if (space === null) {
       const spaceWrite = await this.database
@@ -68,7 +100,7 @@ export class DemoCorpusService {
         .bind(
           DEMO_SPACE_ID,
           "Demo Engineering Knowledge",
-          fixtureManifest.rootId,
+          publicDemoManifest.rootId,
           timestamp,
           timestamp,
         )
@@ -79,7 +111,7 @@ export class DemoCorpusService {
           `SELECT id, name, mode FROM knowledge_spaces
            WHERE source_type = 'fixture' AND source_root_id = ?`,
         )
-        .bind(fixtureManifest.rootId)
+        .bind(publicDemoManifest.rootId)
         .first<KnowledgeSpaceRow>();
     } else if (
       space.name !== "Demo Engineering Knowledge" ||
@@ -97,13 +129,13 @@ export class DemoCorpusService {
     }
     if (space === null) throw new Error("Demo knowledge space is unavailable.");
 
-    for (const page of fixtureManifest.documents) {
+    for (const page of publicDemoManifest.documents) {
       const stableIds = identifiers[page.sourcePageId];
       if (stableIds === undefined) {
-        throw new Error("A fixture is missing stable identifiers.");
+        throw new Error("A public-demo source is missing stable identifiers.");
       }
       const source = await this.adapter.fetchPage({
-        rootId: fixtureManifest.rootId,
+        rootId: publicDemoManifest.rootId,
         pageId: page.sourcePageId,
       });
       const documentChecksum = await checksum(
@@ -141,8 +173,9 @@ export class DemoCorpusService {
             `INSERT INTO documents (
               id, knowledge_space_id, source_page_id, source_url,
               parent_source_page_id, title, breadcrumb_json, last_edited_at,
-              checksum, index_status, last_synced_at, created_at, updated_at
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'indexed', ?, ?, ?)
+              checksum, index_status, last_synced_at, created_at, updated_at,
+              metadata_json
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'indexed', ?, ?, ?, ?)
             ON CONFLICT(knowledge_space_id, source_page_id) DO UPDATE SET
               source_url = excluded.source_url,
               parent_source_page_id = excluded.parent_source_page_id,
@@ -150,6 +183,7 @@ export class DemoCorpusService {
               breadcrumb_json = excluded.breadcrumb_json,
               last_edited_at = excluded.last_edited_at,
               checksum = excluded.checksum,
+              metadata_json = excluded.metadata_json,
               index_status = 'indexed',
               last_synced_at = excluded.last_synced_at,
               updated_at = excluded.updated_at`,
@@ -167,6 +201,7 @@ export class DemoCorpusService {
             timestamp,
             timestamp,
             timestamp,
+            JSON.stringify(source.metadata),
           ),
         this.database
           .prepare("DELETE FROM document_chunks WHERE document_id = ?")

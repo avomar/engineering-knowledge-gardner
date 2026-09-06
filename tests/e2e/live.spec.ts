@@ -95,6 +95,109 @@ test("browses fresh live Notion sources through safe links", async ({
   await expect(page.getByText(/Deploy with Wrangler/u)).toBeVisible();
 });
 
+test("requires typed confirmation before resetting the live source index", async ({
+  page,
+}) => {
+  await page.route("http://127.0.0.1:5173/api/sync", async (route) => {
+    await route.fulfill({ json: overview(syncRun("completed")) });
+  });
+  await page.route(`http://127.0.0.1:5173/api/sync/${runId}`, async (route) => {
+    await route.fulfill({ json: { run: syncRun("completed"), documents: [] } });
+  });
+  let resetBody: unknown;
+  await page.route(
+    "http://127.0.0.1:5173/api/maintenance/index-reset",
+    async (route) => {
+      resetBody = route.request().postDataJSON();
+      await route.fulfill({
+        json: {
+          deletedDocuments: 3,
+          queuedVectors: 7,
+          pendingVectorCleanup: false,
+        },
+      });
+    },
+  );
+
+  await page.goto("/");
+  await page.getByRole("button", { name: "sync", exact: true }).click();
+  const reset = page.getByRole("button", { name: "Reset index" });
+  await expect(reset).toBeDisabled();
+  await page.getByLabel("Type RESET INDEX to confirm").fill("RESET INDEX");
+  await reset.click();
+  await expect(
+    page.getByText(/Existing chats and drafts were preserved/u),
+  ).toBeVisible();
+  expect(resetBody).toEqual({ confirmation: "RESET INDEX" });
+});
+
+test("edits draft assumptions and explicitly publishes frozen evidence", async ({
+  page,
+}) => {
+  await page.route("http://127.0.0.1:5173/api/sync", async (route) => {
+    await route.fulfill({ json: overview(syncRun("completed")) });
+  });
+  await page.route(`http://127.0.0.1:5173/api/sync/${runId}`, async (route) => {
+    await route.fulfill({ json: { run: syncRun("completed"), documents: [] } });
+  });
+  let draft = publicDraft();
+  let editBody: Record<string, unknown> | null = null;
+  let publishBody: Record<string, unknown> | null = null;
+  await page.route("http://127.0.0.1:5173/api/drafts", async (route) => {
+    await route.fulfill({ json: { items: [draft], nextCursor: null } });
+  });
+  await page.route(
+    `http://127.0.0.1:5173/api/drafts/${draft.id}`,
+    async (route) => {
+      editBody = route.request().postDataJSON() as Record<string, unknown>;
+      draft = {
+        ...draft,
+        assumptions: editBody.assumptions as string[],
+        version: 2,
+        wasEdited: true,
+      };
+      await route.fulfill({ json: draft });
+    },
+  );
+  await page.route(
+    `http://127.0.0.1:5173/api/drafts/${draft.id}/publish`,
+    async (route) => {
+      publishBody = route.request().postDataJSON() as Record<string, unknown>;
+      draft = {
+        ...draft,
+        status: "published",
+        publishState: "published",
+        notionPageId: "60000000-0000-4000-8000-000000000009",
+        notionUrl: "https://www.notion.so/60000000000040008000000000000009",
+        publishedAt: now,
+      };
+      await route.fulfill({ json: { draft, reused: false } });
+    },
+  );
+
+  await page.goto("/");
+  await page.getByRole("button", { name: "drafts", exact: true }).click();
+  await expect(
+    page.getByRole("heading", { name: "Review before Notion sees it." }),
+  ).toBeVisible();
+  await expect(page.getByText("Frozen source evidence")).toBeVisible();
+  await page
+    .getByLabel("Assumptions, one per line")
+    .fill("Confirm the owner\nVerify the rollback window");
+  await page.getByRole("button", { name: "Save review" }).click();
+  expect(editBody).toMatchObject({
+    assumptions: ["Confirm the owner", "Verify the rollback window"],
+    version: 1,
+  });
+
+  page.once("dialog", (dialog) => void dialog.accept());
+  await page.getByRole("button", { name: "Publish to Notion" }).click();
+  await expect(
+    page.getByRole("link", { name: "Open published Notion page" }),
+  ).toBeVisible();
+  expect(publishBody).toEqual({ version: 2, confirmed: true });
+});
+
 function syncRun(status: "queued" | "completed") {
   return {
     id: runId,
@@ -124,5 +227,44 @@ function overview(run: ReturnType<typeof syncRun>) {
       lastSuccessfulSyncAt: now,
     },
     runs: [run],
+  };
+}
+
+function publicDraft() {
+  return {
+    id: "60000000-0000-4000-8000-000000000004",
+    knowledgeSpaceId: spaceId,
+    ownerSessionId: "60000000-0000-4000-8000-000000000005",
+    sourceMessageId: "60000000-0000-4000-8000-000000000006",
+    generationInstruction: null,
+    title: "Incident follow-up",
+    contentMarkdown: "## Mitigation\n\nDisable the fictional export path.",
+    sources: [
+      {
+        chunkId: "60000000-0000-4000-8000-000000000007",
+        documentId,
+        sourcePageId: "70000000-0000-4000-8000-000000000001",
+        title: "Connection incident",
+        breadcrumb: ["Engineering", "Incidents", "Connection incident"],
+        sourceUrl: "https://www.notion.so/70000000000040008000000000000001",
+        quote: "The export path was disabled with a feature flag.",
+        sourceState: "current",
+        lastSyncedAt: now,
+        checksum: "fictional-checksum",
+      },
+    ],
+    assumptions: ["Confirm the owner before adoption."],
+    targetParentId: "60000000-0000-4000-8000-000000000008",
+    status: "pending",
+    version: 1,
+    wasEdited: false,
+    publishState: "idle",
+    publishAttemptCount: 0,
+    notionPageId: null,
+    notionUrl: null,
+    createdAt: now,
+    updatedAt: now,
+    publishedAt: null,
+    feedback: null,
   };
 }

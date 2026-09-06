@@ -34,6 +34,7 @@ beforeAll(async () => {
       "0003_live_notion_sync.sql",
       "0004_hybrid_retrieval.sql",
       "0005_safe_draft_publishing.sql",
+      "0006_garden_feedback_hardening.sql",
     ].map((filename) =>
       readFile(path.join(directory, "../migrations", filename), "utf8"),
     ),
@@ -70,6 +71,8 @@ describe("D1 foundation", () => {
         "documents",
         "drafts",
         "feedback",
+        "garden_findings",
+        "garden_scans",
         "knowledge_spaces",
         "messages",
         "sync_runs",
@@ -146,6 +149,30 @@ describe("D1 foundation", () => {
         "publish_state",
         "publish_lease_expires_at",
       ]),
+    );
+  });
+
+  it("adds garden scans, lifecycle findings, and scoped feedback", async () => {
+    const findingColumns = await database
+      .prepare("PRAGMA table_info(garden_findings)")
+      .all<{ name: string }>();
+    expect(findingColumns.results.map(({ name }) => name)).toEqual(
+      expect.arrayContaining([
+        "fingerprint",
+        "signal_type",
+        "severity",
+        "status",
+        "version",
+        "evidence_json",
+        "recommendation",
+      ]),
+    );
+
+    const feedbackColumns = await database
+      .prepare("PRAGMA table_info(feedback)")
+      .all<{ name: string }>();
+    expect(feedbackColumns.results.map(({ name }) => name)).toEqual(
+      expect.arrayContaining(["owner_session_id", "updated_at"]),
     );
   });
 

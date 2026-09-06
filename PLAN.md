@@ -53,14 +53,17 @@ The product delivers three outcomes:
 - Node.js `26.8.1` is pinned for local development and CI as an explicit project override. It is a Current release on 2026-09-05, so this repository accepts the shorter pre-LTS support window and will re-evaluate the pin when Node 26 reaches LTS.
 - Yarn 4 is the sole package manager. `package.json` pins the `packageManager` field, and local/CI setup uses `corepack enable` followed by `yarn install --immutable`.
 - Commit `yarn.lock` and use `.yarnrc.yml` with `nodeLinker: node-modules` to avoid Plug'n'Play compatibility issues in Wrangler, Vite, Tailwind, Playwright, and Cloudflare's Worker test tooling.
-- All repository scripts are invoked through Yarn: `yarn dev`, `yarn dev:worker`, `yarn test`, `yarn test:e2e`, `yarn typecheck`, `yarn lint`, `yarn build`, and `yarn deploy`.
+- All repository scripts are invoked through Yarn: `yarn dev`, `yarn dev:worker`, `yarn test`, `yarn test:e2e`, `yarn typecheck`, `yarn lint`, `yarn build`, `yarn deploy:demo`, and `yarn deploy:live`.
 - Do not use `pnpm` or Deno as project package managers/task runners. The Worker runtime target remains Cloudflare Workers, not a Deno deployment runtime.
 
 ## Architecture
 
 ```mermaid
 flowchart TD
-    U[Owner] --> W[Cloudflare Worker]
+    U[Owner] --> A[Cloudflare Access]
+    A --> W[Private live Cloudflare Worker]
+    PBU[Public visitor] --> DW[Public demo Cloudflare Worker]
+    DW --> DF[Fixture-only D1 and Workers AI]
     W --> P[React static assets]
     W --> API[Hono /api API]
 
@@ -76,7 +79,6 @@ flowchart TD
     WF --> DB
     WF --> V
 
-    A[Cloudflare Access] --> P
 ```
 
 ### Environments
@@ -128,7 +130,9 @@ Writes require an idempotency key stored in D1. A repeated publish request must 
 | `messages`           | `id`, `conversation_id`, `role`, `content`, `citation_json`, `created_at`; index by conversation and creation time                                                                                                                                         |
 | `drafts`             | `id`, `knowledge_space_id`, `title`, `content_markdown`, `source_json`, `assumptions_json`, `target_parent_id`, `status`, `idempotency_key`, `notion_page_id`, timestamps; unique idempotency key                                                          |
 | `audit_events`       | `id`, action, resource ID, outcome, non-sensitive metadata, timestamp; index by resource and time                                                                                                                                                          |
-| `feedback`           | `id`, message/draft ID, rating, correction, timestamp                                                                                                                                                                                                      |
+| `feedback`           | `id`, owned message/draft target, rating, optional correction, created/updated timestamps; one record per owner and target                                                                                                                                 |
+| `garden_scans`       | Knowledge space/owner scope, exclusive running lease, policy snapshot, AI/result counts, safe status/error fields, timestamps                                                                                                                              |
+| `garden_findings`    | Stable fingerprint, signal/severity/lifecycle/version, evidence, recommendation, AI flag, detection/dismissal/resolution timestamps                                                                                                                        |
 
 Vectorize metadata contains `knowledgeSpaceId`, `documentId`, `chunkId`, and the document's edit timestamp. Raw chunk text remains in D1.
 
@@ -262,7 +266,7 @@ The garden uses deterministic signals before any LLM recommendation:
 - normalized title collisions,
 - configured obsolete keywords, such as an old runtime version.
 
-The LLM only turns a signal plus source evidence into a cautious, prioritized recommendation. Every recommendation must identify its source page and reason. The UI labels these as **review suggestions**, not confirmed defects.
+The LLM only turns structured signal facts into cautious wording for at most 20 recommendations in one call. It never receives full bodies and cannot change type, severity, evidence, affected pages, or lifecycle. Invalid output falls back to deterministic copy. A scan reads at most 50 documents, persists at most 100 findings, and uses a five-minute exclusive lease. Dismissed findings remain dismissed while present; missing findings resolve; recurring resolved findings reopen. The UI labels these as **review suggestions**, not confirmed defects.
 
 ## API and UI contract
 
@@ -277,9 +281,14 @@ The LLM only turns a signal plus source evidence into a cautious, prioritized re
 | `POST /api/chat`                      | Grounded answer for a question and conversation ID                 |
 | `GET /api/conversations/:id/messages` | Restore the active conversation for its demo browser session       |
 | `GET /api/documents/search`           | Keyword/title source search with pagination                        |
-| `POST /drafts`                        | Generate a pending draft from a request and retrieved sources      |
-| `POST /drafts/:id/publish`            | Publish a user-approved draft to the fixed Notion parent           |
-| `POST /feedback`                      | Save answer/draft quality feedback                                 |
+| `POST /api/drafts`                    | Generate a pending draft from a cited answer                       |
+| `POST /api/drafts/:id/publish`        | Publish a user-approved draft to the fixed Notion parent           |
+| `POST /api/feedback`                  | Upsert owned answer/draft quality feedback                         |
+| `POST /api/garden/scans`              | Run/reuse a bounded manual documentation-health scan               |
+| `GET /api/garden`                     | Filter findings and read policy/count/latest-scan state            |
+| `PATCH /api/garden/findings/:id`      | Dismiss or reopen a versioned finding                              |
+| `DELETE /api/conversations`           | Clear current browser session conversations after confirmation     |
+| `POST /api/maintenance/index-reset`   | Live-only confirmed synchronized/index/garden reset                |
 
 ### Pages views
 
@@ -304,7 +313,7 @@ The LLM only turns a signal plus source evidence into a cautious, prioritized re
 
 - The Notion connection is restricted to the selected Engineering Knowledge root.
 - Notion credentials exist only as Worker secrets.
-- Live deployment is protected by Cloudflare Access.
+- Live deployment is protected by Cloudflare Access at the edge and validates Access JWT signature, issuer, expiry, audience, and subject in the API.
 - The SPA and API share one Worker origin; there is no browser-facing CORS configuration.
 - Public demo data consists solely of fictional fixtures.
 - Personal Notion content, tokens, screenshots, test fixtures, logs, and prompt history must never be committed.
@@ -457,7 +466,7 @@ The UI exposes run status and actionable errors; the repository documents where 
 
 ### Phase 5 — Garden findings, hardening, and submission polish
 
-**Deliverable:** Documentation-health dashboard, feedback loop, Access-protected live deployment, public demo deployment, tests, architecture screenshots, and complete README.
+**Deliverable:** Implemented in code. Documentation-health dashboard, feedback loop, Access-JWT-protected live API, isolated public demo configuration, privacy/maintenance controls, tests, and submission-ready documentation. Cloudflare resource creation and final deployed smoke tests remain operator rollout tasks.
 
 **Acceptance criteria:**
 
@@ -479,10 +488,10 @@ The UI exposes run status and actionable errors; the repository documents where 
 
 ## Delivery checklist
 
-- [ ] Public repository has no secrets or personal content.
-- [ ] `README.md` explains problem, architecture, local setup, deployment, use, costs, security, and trade-offs.
-- [ ] `PROMPT_HISTORY.md` contains substantive planning and coding prompts from project selection onward.
-- [ ] Demo environment uses only fictional data.
-- [ ] Live environment is Access-protected and Notion-scoped.
-- [ ] Evaluation fixtures and test commands are documented and runnable.
+- [x] Public repository has no committed secrets or personal source content.
+- [x] `README.md` explains problem, architecture, local setup, deployment, use, costs, security, and trade-offs.
+- [x] `PROMPT_HISTORY.md` contains substantive planning and coding prompts from project selection onward.
+- [x] Demo configuration and fixtures contain only fictional data.
+- [ ] Deployed live environment is Access-protected and smoke tested after Phase 5 rollout.
+- [x] Evaluation fixtures and test commands are documented and runnable.
 - [ ] Deployed Worker demo URL and GitHub repository URL are ready for the application form.

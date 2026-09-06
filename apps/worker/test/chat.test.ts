@@ -5,7 +5,9 @@ import { fileURLToPath } from "node:url";
 import {
   apiErrorResponseSchema,
   chatResponseSchema,
+  conversationClearResponseSchema,
   conversationMessagesResponseSchema,
+  feedbackResponseSchema,
   type GroundedAnswer,
 } from "@knowledge-gardener/domain";
 import { Miniflare } from "miniflare";
@@ -22,6 +24,7 @@ import { createApp } from "../src/index";
 const directory = path.dirname(fileURLToPath(import.meta.url));
 const sessionId = "30000000-0000-4000-8000-000000000001";
 const otherSessionId = "30000000-0000-4000-8000-000000000002";
+const maintenanceSessionId = "30000000-0000-4000-8000-000000000003";
 
 let miniflare: Miniflare;
 let database: D1Database;
@@ -45,17 +48,21 @@ describe("demo grounded chat", () => {
   it.each([
     [
       "Why did we choose D1?",
-      "storage-adr",
-      "structured, relational, persistent application data",
+      "adr-0005-hybrid-retrieval",
+      "ADR 0005: Hybrid retrieval with D1 authority and live chat",
     ],
     [
-      "How was the connection incident mitigated?",
-      "connection-incident",
-      "bulk-export-v2",
+      "Why does live mode validate Cloudflare Access JWTs?",
+      "adr-0008-demo-live-boundaries",
+      "ADR 0008: Public demo and live security boundaries",
     ],
-    ["How do I run this project locally?", "local-setup", "yarn dev"],
+    [
+      "How does the app publish drafts safely to Notion?",
+      "adr-0006-safe-draft-publishing",
+      "ADR 0006: Safe, answer-derived Notion draft publishing",
+    ],
   ])(
-    "answers and cites the required fixture for %s",
+    "answers and cites the required public source for %s",
     async (question, expectedSource, expectedFact) => {
       const generator = new FixtureAnswerGenerator();
       const response = await chatRequest(generator, sessionId, { question });
@@ -106,7 +113,7 @@ describe("demo grounded chat", () => {
     );
     expect(history.messages).toHaveLength(2);
     expect(history.messages[1]?.citations[0]?.source.sourcePageId).toBe(
-      "storage-adr",
+      "adr-0005-hybrid-retrieval",
     );
 
     const hidden = await app.request(
@@ -130,7 +137,7 @@ describe("demo grounded chat", () => {
       ).json(),
     );
     const continued = await chatRequest(generator, otherSessionId, {
-      question: "How was the connection incident mitigated?",
+      question: "Why does live mode validate Cloudflare Access JWTs?",
       conversationId: first.conversationId,
     });
     expect(continued.status).toBe(200);
@@ -213,7 +220,7 @@ describe("demo grounded chat", () => {
               quote:
                 calls.length === 1
                   ? "This sentence does not occur in the fixture."
-                  : "D1 is the primary store for structured, relational, persistent application data.",
+                  : (input.sources[0]?.content.split("\n").find(Boolean) ?? ""),
             },
           ],
           unansweredQuestions: [],
@@ -265,6 +272,29 @@ describe("demo grounded chat", () => {
     expect(denied.headers.get("Retry-After")).toBe("60");
   });
 
+  it("keys public demo AI limits by connecting IP", async () => {
+    const keys: string[] = [];
+    const rateLimiter = {
+      limit: async ({ key }: { key: string }) => {
+        keys.push(key);
+        return { success: true };
+      },
+    } as RateLimit;
+    const headers = requestHeaders(sessionId);
+    headers["CF-Connecting-IP"] = "203.0.113.42";
+    const response = await testApp(new FixtureAnswerGenerator()).request(
+      "https://api.example.invalid/api/chat",
+      {
+        method: "POST",
+        headers,
+        body: JSON.stringify({ question: "Why did we choose D1?" }),
+      },
+      environment(rateLimiter),
+    );
+    expect(response.status).toBe(200);
+    expect(keys).toEqual(["203.0.113.42"]);
+  });
+
   it("requires a synchronized knowledge space in live mode", async () => {
     const response = await testApp(new FixtureAnswerGenerator()).request(
       "https://api.example.invalid/api/chat",
@@ -280,6 +310,145 @@ describe("demo grounded chat", () => {
       "knowledge_not_ready",
     );
   });
+
+  it("upserts owned answer feedback and restores it with history", async () => {
+    const generator = new FixtureAnswerGenerator();
+    const created = chatResponseSchema.parse(
+      await (
+        await chatRequest(generator, maintenanceSessionId, {
+          question: "Why did we choose D1?",
+        })
+      ).json(),
+    );
+    const app = testApp(generator);
+    const negative = await app.request(
+      "https://api.example.invalid/api/feedback",
+      {
+        method: "POST",
+        headers: requestHeaders(maintenanceSessionId),
+        body: JSON.stringify({
+          messageId: created.assistantMessage.id,
+          rating: -1,
+          correction: "Clarify the relational data boundary.",
+        }),
+      },
+      environment(),
+    );
+    expect(
+      feedbackResponseSchema.parse(await negative.json()).feedback,
+    ).toEqual({
+      rating: -1,
+      correction: "Clarify the relational data boundary.",
+    });
+
+    const positive = await app.request(
+      "https://api.example.invalid/api/feedback",
+      {
+        method: "POST",
+        headers: requestHeaders(maintenanceSessionId),
+        body: JSON.stringify({
+          messageId: created.assistantMessage.id,
+          rating: 1,
+        }),
+      },
+      environment(),
+    );
+    expect(
+      feedbackResponseSchema.parse(await positive.json()).feedback,
+    ).toEqual({ rating: 1, correction: null });
+
+    const restored = conversationMessagesResponseSchema.parse(
+      await (
+        await app.request(
+          `https://api.example.invalid/api/conversations/${created.conversationId}/messages`,
+          { headers: requestHeaders(maintenanceSessionId) },
+          environment(),
+        )
+      ).json(),
+    );
+    const restoredAssistant = restored.messages.find(
+      (message) => message.role === "assistant",
+    );
+    expect(restoredAssistant?.feedback).toEqual({
+      rating: 1,
+      correction: null,
+    });
+
+    const hidden = await app.request(
+      "https://api.example.invalid/api/feedback",
+      {
+        method: "POST",
+        headers: requestHeaders(otherSessionId),
+        body: JSON.stringify({
+          messageId: created.assistantMessage.id,
+          rating: 1,
+        }),
+      },
+      environment(),
+    );
+    expect(hidden.status).toBe(404);
+  });
+
+  it("clears only the current browser session after explicit confirmation", async () => {
+    const generator = new FixtureAnswerGenerator();
+    const owned = chatResponseSchema.parse(
+      await (
+        await chatRequest(generator, maintenanceSessionId, {
+          question: "How do I run this project locally?",
+        })
+      ).json(),
+    );
+    const other = chatResponseSchema.parse(
+      await (
+        await chatRequest(generator, otherSessionId, {
+          question: "How do I run this project locally?",
+        })
+      ).json(),
+    );
+    const app = testApp(generator);
+    const invalid = await app.request(
+      "https://api.example.invalid/api/conversations",
+      {
+        method: "DELETE",
+        headers: requestHeaders(maintenanceSessionId),
+        body: JSON.stringify({ confirmed: false }),
+      },
+      environment(),
+    );
+    expect(invalid.status).toBe(400);
+
+    const cleared = await app.request(
+      "https://api.example.invalid/api/conversations",
+      {
+        method: "DELETE",
+        headers: requestHeaders(maintenanceSessionId),
+        body: JSON.stringify({ confirmed: true }),
+      },
+      environment(),
+    );
+    expect(
+      conversationClearResponseSchema.parse(await cleared.json())
+        .deletedConversations,
+    ).toBeGreaterThan(0);
+    expect(
+      (
+        await app.request(
+          `https://api.example.invalid/api/conversations/${owned.conversationId}/messages`,
+          { headers: requestHeaders(maintenanceSessionId) },
+          environment(),
+        )
+      ).status,
+    ).toBe(404);
+    expect(
+      (
+        await app.request(
+          `https://api.example.invalid/api/conversations/${other.conversationId}/messages`,
+          { headers: requestHeaders(otherSessionId) },
+          environment(),
+        )
+      ).status,
+    ).toBe(200);
+  });
 });
 
 class FixtureAnswerGenerator implements AnswerGenerator {
@@ -288,31 +457,13 @@ class FixtureAnswerGenerator implements AnswerGenerator {
   async generate(input: GenerateAnswerInput): Promise<GroundedAnswer> {
     this.calls.push(input);
     const source = input.sources[0];
-    if (source === undefined) throw new Error("Expected a retrieved fixture.");
-    const values: Record<string, { answer: string; quote: string }> = {
-      "storage-adr": {
-        answer:
-          "D1 was chosen for structured, relational, persistent application data.",
-        quote:
-          "D1 is the primary store for structured, relational, persistent application data.",
-      },
-      "connection-incident": {
-        answer:
-          "The incident was mitigated by disabling bulk export with the bulk-export-v2 feature flag.",
-        quote:
-          "The on-call engineer disabled the bulk export path with the `bulk-export-v2` feature flag.",
-      },
-      "local-setup": {
-        answer: "Use the documented command: yarn dev.",
-        quote: "Run `yarn dev` to start the local application.",
-      },
-    };
-    const value = values[source.source.sourcePageId];
-    if (value === undefined) throw new Error("Unexpected fixture ranking.");
+    if (source === undefined) throw new Error("Expected a retrieved source.");
+    const quote = source.content.split("\n").find(Boolean)?.trim();
+    if (quote === undefined) throw new Error("Retrieved source is empty.");
     return {
-      answer: value.answer,
+      answer: source.source.title,
       confidence: "high",
-      citations: [{ chunkId: source.chunkId, quote: value.quote }],
+      citations: [{ chunkId: source.chunkId, quote }],
       unansweredQuestions: [],
     };
   }
@@ -321,6 +472,7 @@ class FixtureAnswerGenerator implements AnswerGenerator {
 function testApp(generator: AnswerGenerator) {
   return createApp({
     createAnswerGenerator: () => generator,
+    accessVerifier: { verify: async () => "test-access-subject" },
     log: () => undefined,
   });
 }
@@ -331,6 +483,8 @@ function environment(rateLimiter: RateLimit = allowRateLimit()): Env {
     AI: {} as Ai,
     CHAT_RATE_LIMITER: rateLimiter,
     APP_MODE: "demo",
+    ACCESS_TEAM_DOMAIN: "test.cloudflareaccess.com",
+    ACCESS_AUD: "test-audience",
   };
 }
 
@@ -355,6 +509,7 @@ function requestHeaders(browserSessionId: string): Record<string, string> {
   return {
     "Content-Type": "application/json",
     "X-Client-Session-Id": browserSessionId,
+    "Cf-Access-Jwt-Assertion": "test-token",
   };
 }
 
@@ -377,6 +532,7 @@ async function applyMigrations(target: D1Database): Promise<void> {
     "0003_live_notion_sync.sql",
     "0004_hybrid_retrieval.sql",
     "0005_safe_draft_publishing.sql",
+    "0006_garden_feedback_hardening.sql",
   ];
   for (const filename of files) {
     const migration = await readFile(

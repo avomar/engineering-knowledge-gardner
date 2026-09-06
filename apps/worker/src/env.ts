@@ -12,4 +12,10 @@ export interface Env {
   NOTION_ROOT_PAGE_ID?: string;
   NOTION_DRAFTS_PARENT_ID?: string;
   KNOWLEDGE_INDEX?: VectorizeIndex;
+  ACCESS_TEAM_DOMAIN?: string;
+  ACCESS_AUD?: string;
+  GARDEN_STALE_AFTER_DAYS?: string;
+  GARDEN_REQUIRED_METADATA_KEYS?: string;
+  GARDEN_OBSOLETE_TERMS?: string;
+  DEMO_RETENTION_DAYS?: string;
 }
