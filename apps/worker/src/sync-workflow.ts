@@ -6,7 +6,13 @@ import {
 import { NonRetryableError } from "cloudflare:workflows";
 import { SourceAdapterError } from "@knowledge-gardener/source";
 
-import { checksum, chunkDocument, stableUuid } from "./chunking";
+import {
+  checksum,
+  CHUNKING_VERSION,
+  chunkDocument,
+  stableUuid,
+} from "./chunking";
+import { EMBEDDING_MODEL, EMBEDDING_VERSION, embedTexts } from "./embedding";
 import type { Env } from "./env";
 import {
   discoverNotionDocuments,
@@ -89,7 +95,14 @@ export async function synchronize(env: Env, params: SyncWorkflowParams) {
   const discoveryComplete =
     discovery.complete && discovery.documents.length <= 50;
   const seen = new Set<string>();
-  const counts = { indexed: 0, skipped: 0, failed: 0, deleted: 0, chunks: 0 };
+  const counts = {
+    indexed: 0,
+    skipped: 0,
+    failed: 0,
+    deleted: 0,
+    chunks: 0,
+    embeddedChunks: 0,
+  };
   const now = new Date().toISOString();
 
   for (const failure of discovery.failures) {
@@ -171,6 +184,44 @@ export async function synchronize(env: Env, params: SyncWorkflowParams) {
       (await stableUuid(`notion:document:${source.sourcePageId}`));
 
     if (existing?.checksum === documentChecksum) {
+      const existingChunks = await env.DB.prepare(
+        `SELECT id, content FROM document_chunks
+         WHERE document_id = ? AND (embedding_version IS NULL OR embedding_version != ?)`,
+      )
+        .bind(documentId, EMBEDDING_VERSION)
+        .all<{ id: string; content: string }>();
+      if (existingChunks.results.length > 0) {
+        try {
+          await upsertChunkVectors(
+            env,
+            params.knowledgeSpaceId,
+            existingChunks.results,
+          );
+          await assertRunWrite(
+            env.DB.prepare(
+              `UPDATE document_chunks SET embedding_model = ?, embedding_version = ?,
+               vector_upserted_at = ? WHERE document_id = ?`,
+            )
+              .bind(EMBEDDING_MODEL, EMBEDDING_VERSION, now, documentId)
+              .run(),
+          );
+          counts.embeddedChunks += existingChunks.results.length;
+        } catch {
+          await markStale(env.DB, documentId, now, "embedding_unavailable");
+          await recordOutcome(
+            env.DB,
+            params.runId,
+            documentId,
+            source,
+            "failed",
+            now,
+            "embedding_unavailable",
+            "Embeddings could not be created for this source.",
+          );
+          counts.failed += 1;
+          continue;
+        }
+      }
       await assertRunWrite(
         env.DB.prepare(
           `UPDATE documents SET source_url = ?, parent_source_page_id = ?, title = ?,
@@ -266,20 +317,47 @@ export async function synchronize(env: Env, params: SyncWorkflowParams) {
       counts.failed += 1;
       continue;
     }
+    let oldVectorIds: string[] = [];
+    try {
+      oldVectorIds = (
+        await env.DB.prepare(
+          "SELECT id FROM document_chunks WHERE document_id = ?",
+        )
+          .bind(documentId)
+          .all<{ id: string }>()
+      ).results.map((row) => row.id);
+      await upsertChunkVectors(env, params.knowledgeSpaceId, chunks);
+    } catch {
+      if (existing !== null)
+        await markStale(env.DB, documentId, now, "embedding_unavailable");
+      await recordOutcome(
+        env.DB,
+        params.runId,
+        existing?.id ?? null,
+        source,
+        "failed",
+        now,
+        "embedding_unavailable",
+        "Embeddings could not be created for this source.",
+      );
+      counts.failed += 1;
+      continue;
+    }
     const statements = [
       env.DB.prepare(
         `INSERT INTO documents (
           id, knowledge_space_id, source_page_id, source_url, parent_source_page_id,
           title, breadcrumb_json, last_edited_at, checksum, index_status,
-          last_synced_at, created_at, updated_at, metadata_json,
+          last_synced_at, created_at, updated_at, metadata_json, chunking_version,
           last_sync_error_code, last_sync_error_message
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'indexed', ?, ?, ?, ?, NULL, NULL)
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'indexed', ?, ?, ?, ?, ?, NULL, NULL)
         ON CONFLICT(knowledge_space_id, source_page_id) DO UPDATE SET
           source_url = excluded.source_url, parent_source_page_id = excluded.parent_source_page_id,
           title = excluded.title, breadcrumb_json = excluded.breadcrumb_json,
           last_edited_at = excluded.last_edited_at, checksum = excluded.checksum,
           index_status = 'indexed', last_synced_at = excluded.last_synced_at,
           updated_at = excluded.updated_at, metadata_json = excluded.metadata_json,
+          chunking_version = excluded.chunking_version,
           last_sync_error_code = NULL, last_sync_error_message = NULL`,
       ).bind(
         documentId,
@@ -295,14 +373,20 @@ export async function synchronize(env: Env, params: SyncWorkflowParams) {
         now,
         now,
         JSON.stringify(source.metadata),
+        CHUNKING_VERSION,
       ),
+      env.DB.prepare(
+        "DELETE FROM document_chunks_fts WHERE rowid IN (SELECT rowid FROM document_chunks WHERE document_id = ?)",
+      ).bind(documentId),
       env.DB.prepare("DELETE FROM document_chunks WHERE document_id = ?").bind(
         documentId,
       ),
       ...chunks.map((chunk) =>
         env.DB.prepare(
-          `INSERT INTO document_chunks (id, document_id, ordinal, content, token_count, checksum, created_at)
-         VALUES (?, ?, ?, ?, ?, ?, ?)`,
+          `INSERT INTO document_chunks (
+            id, document_id, ordinal, content, token_count, checksum, created_at,
+            embedding_model, embedding_version, vector_upserted_at
+          ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
         ).bind(
           chunk.id,
           chunk.documentId,
@@ -311,8 +395,23 @@ export async function synchronize(env: Env, params: SyncWorkflowParams) {
           chunk.tokenCount,
           chunk.checksum,
           chunk.createdAt,
+          EMBEDDING_MODEL,
+          EMBEDDING_VERSION,
+          now,
         ),
       ),
+      env.DB.prepare(
+        `INSERT INTO document_chunks_fts(rowid, content)
+         SELECT rowid, content FROM document_chunks WHERE document_id = ?`,
+      ).bind(documentId),
+      ...oldVectorIds
+        .filter((id) => !chunks.some((chunk) => chunk.id === id))
+        .map((id) =>
+          env.DB.prepare(
+            `INSERT INTO vector_deletion_queue (knowledge_space_id, vector_id, enqueued_at)
+             VALUES (?, ?, ?) ON CONFLICT(knowledge_space_id, vector_id) DO NOTHING`,
+          ).bind(params.knowledgeSpaceId, id, now),
+        ),
     ];
     const results = await env.DB.batch(statements);
     for (const result of results) await assertRunWrite(Promise.resolve(result));
@@ -326,6 +425,7 @@ export async function synchronize(env: Env, params: SyncWorkflowParams) {
     );
     counts.indexed += 1;
     counts.chunks += chunks.length;
+    counts.embeddedChunks += chunks.length;
   }
 
   if (discoveryComplete && counts.failed === 0) {
@@ -341,14 +441,31 @@ export async function synchronize(env: Env, params: SyncWorkflowParams) {
       }>();
     for (const document of current.results) {
       if (seen.has(document.source_page_id)) continue;
-      await recordDeletedOutcome(env.DB, params.runId, document, now);
-      await assertRunWrite(
-        env.DB.prepare("DELETE FROM documents WHERE id = ?")
-          .bind(document.id)
-          .run(),
+      const vectors = await env.DB.prepare(
+        "SELECT id FROM document_chunks WHERE document_id = ?",
+      )
+        .bind(document.id)
+        .all<{ id: string }>();
+      const deletes = vectors.results.map((row) =>
+        env.DB.prepare(
+          `INSERT INTO vector_deletion_queue (knowledge_space_id, vector_id, enqueued_at)
+           VALUES (?, ?, ?) ON CONFLICT(knowledge_space_id, vector_id) DO NOTHING`,
+        ).bind(params.knowledgeSpaceId, row.id, now),
       );
+      await recordDeletedOutcome(env.DB, params.runId, document, now);
+      await env.DB.batch([
+        ...deletes,
+        env.DB.prepare(
+          "DELETE FROM document_chunks_fts WHERE rowid IN (SELECT rowid FROM document_chunks WHERE document_id = ?)",
+        ).bind(document.id),
+        env.DB.prepare("DELETE FROM documents WHERE id = ?").bind(document.id),
+      ]);
       counts.deleted += 1;
     }
+  }
+
+  if (env.KNOWLEDGE_INDEX !== undefined) {
+    await drainVectorDeletionQueue(env, params.knowledgeSpaceId, now);
   }
 
   const partial = !discoveryComplete || counts.failed > 0;
@@ -361,7 +478,7 @@ export async function synchronize(env: Env, params: SyncWorkflowParams) {
   await assertRunWrite(
     env.DB.prepare(
       `UPDATE sync_runs SET status = ?, completed_at = ?, discovered_count = ?,
-     indexed_count = ?, skipped_count = ?, failed_count = ?, deleted_count = ?,
+     indexed_count = ?, skipped_count = ?, failed_count = ?, deleted_count = ?, embedded_chunk_count = ?,
      discovery_complete = ?, error_code = ?, error_summary = ? WHERE id = ?`,
     )
       .bind(
@@ -372,6 +489,7 @@ export async function synchronize(env: Env, params: SyncWorkflowParams) {
         counts.skipped,
         counts.failed,
         counts.deleted,
+        counts.embeddedChunks,
         discoveryComplete ? 1 : 0,
         partial ? "partial_sync" : null,
         summary,
@@ -397,6 +515,82 @@ export async function synchronize(env: Env, params: SyncWorkflowParams) {
     }),
   );
   return { status, ...counts };
+}
+
+async function upsertChunkVectors(
+  env: Env,
+  knowledgeSpaceId: string,
+  chunks: readonly { id: string; content: string }[],
+): Promise<void> {
+  if (env.KNOWLEDGE_INDEX === undefined) {
+    throw new Error("The live semantic index is not configured.");
+  }
+  const vectors = await embedTexts(
+    env.AI,
+    chunks.map((chunk) => chunk.content),
+  );
+  await env.KNOWLEDGE_INDEX.upsert(
+    chunks.map((chunk, index) => ({
+      id: chunk.id,
+      values: vectors[index]!,
+      namespace: knowledgeSpaceId,
+      metadata: { knowledgeSpaceId, chunkId: chunk.id },
+    })),
+  );
+}
+
+async function markStale(
+  database: D1Database,
+  documentId: string,
+  now: string,
+  code: string,
+): Promise<void> {
+  await assertRunWrite(
+    database
+      .prepare(
+        `UPDATE documents SET index_status = 'stale', last_sync_error_code = ?,
+       last_sync_error_message = 'Embeddings could not be created for this source.', updated_at = ?
+       WHERE id = ?`,
+      )
+      .bind(code, now, documentId)
+      .run(),
+  );
+}
+
+async function drainVectorDeletionQueue(
+  env: Env,
+  knowledgeSpaceId: string,
+  now: string,
+): Promise<void> {
+  const pending = await env.DB.prepare(
+    `SELECT vector_id FROM vector_deletion_queue
+     WHERE knowledge_space_id = ? ORDER BY enqueued_at LIMIT 100`,
+  )
+    .bind(knowledgeSpaceId)
+    .all<{ vector_id: string }>();
+  if (pending.results.length === 0 || env.KNOWLEDGE_INDEX === undefined) return;
+  const ids = pending.results.map((row) => row.vector_id);
+  try {
+    await env.KNOWLEDGE_INDEX.deleteByIds(ids);
+    await assertRunWrite(
+      env.DB.prepare(
+        `DELETE FROM vector_deletion_queue WHERE knowledge_space_id = ?
+         AND vector_id IN (${ids.map(() => "?").join(", ")})`,
+      )
+        .bind(knowledgeSpaceId, ...ids)
+        .run(),
+    );
+  } catch {
+    await assertRunWrite(
+      env.DB.prepare(
+        `UPDATE vector_deletion_queue SET attempt_count = attempt_count + 1,
+         last_attempt_at = ?, last_error_code = 'vector_delete_unavailable'
+         WHERE knowledge_space_id = ?`,
+      )
+        .bind(now, knowledgeSpaceId)
+        .run(),
+    );
+  }
 }
 
 async function recordOutcome(

@@ -22,6 +22,8 @@ const input: GenerateAnswerInput = {
         breadcrumb: ["Engineering Knowledge", "Storage ADR"],
         sourceUrl: "demo://documents/storage-adr",
         lastEditedAt: "2026-09-05T00:00:00.000Z",
+        lastSyncedAt: "2026-09-05T00:00:00.000Z",
+        sourceState: "current",
       },
     },
   ],

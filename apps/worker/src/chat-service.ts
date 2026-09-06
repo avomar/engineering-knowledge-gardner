@@ -16,7 +16,12 @@ import {
 } from "./answer-generator";
 import { ChatRepository, type RetrievedChunk } from "./chat-repository";
 import { DemoCorpusService } from "./demo-corpus";
-import { retrieveChunks } from "./retrieval";
+import {
+  HybridRetriever,
+  RetrievalUnavailableError,
+  retrieveChunks,
+} from "./retrieval";
+import type { AppMode } from "@knowledge-gardener/domain";
 
 const insufficientAnswer: GroundedAnswer = {
   answer:
@@ -32,7 +37,9 @@ export type ChatServiceErrorCode =
   | "rate_limited"
   | "invalid_ai_response"
   | "ai_unavailable"
-  | "database_unavailable";
+  | "database_unavailable"
+  | "knowledge_not_ready"
+  | "retrieval_unavailable";
 
 export class ChatServiceError extends Error {
   override readonly name = "ChatServiceError";
@@ -49,11 +56,15 @@ export class ChatServiceError extends Error {
 
 export interface ChatServiceOptions {
   database: D1Database;
+  ai: Ai;
   answerGenerator: AnswerGenerator;
   rateLimiter: RateLimit;
   now?: () => string;
   createId?: () => string;
   log?: (record: Record<string, unknown>) => void;
+  mode?: AppMode;
+  notionRootId?: string;
+  knowledgeIndex?: VectorizeIndex;
 }
 
 export class ChatService {
@@ -62,6 +73,7 @@ export class ChatService {
   private readonly now: () => string;
   private readonly createId: () => string;
   private readonly log: (record: Record<string, unknown>) => void;
+  private readonly mode: AppMode;
 
   constructor(private readonly options: ChatServiceOptions) {
     this.repository = new ChatRepository(options.database);
@@ -69,6 +81,7 @@ export class ChatService {
     this.createId = options.createId ?? (() => crypto.randomUUID());
     this.corpus = new DemoCorpusService(options.database, this.now);
     this.log = options.log ?? ((record) => console.log(JSON.stringify(record)));
+    this.mode = options.mode ?? "demo";
   }
 
   async answer(
@@ -78,7 +91,14 @@ export class ChatService {
     const startedAt = Date.now();
     const requestId = this.createId();
     try {
-      const knowledgeSpaceId = await this.corpus.ensureReady();
+      const knowledgeSpaceId = await this.resolveKnowledgeSpace();
+      if (!(await this.repository.hasEligibleChunks(knowledgeSpaceId))) {
+        throw new ChatServiceError(
+          "knowledge_not_ready",
+          "Complete a synchronization before asking questions.",
+          false,
+        );
+      }
       const conversationId = request.conversationId ?? this.createId();
       const createConversation = request.conversationId === undefined;
       if (
@@ -96,33 +116,25 @@ export class ChatService {
         );
       }
 
-      const [history, allChunks] = await Promise.all([
-        createConversation
-          ? Promise.resolve([])
-          : this.repository.listRecentMessages(conversationId, 8),
-        this.repository.listChunks(knowledgeSpaceId),
-      ]);
-      const sources = retrieveChunks(request.question, allChunks, 6);
+      const history = await (createConversation
+        ? Promise.resolve([])
+        : this.repository.listRecentMessages(conversationId, 8));
+      const rateLimitConsumed = this.mode === "live";
+      if (rateLimitConsumed) await this.requireRateLimit(ownerSessionId);
+      const retrieval = await this.retrieve(request.question, knowledgeSpaceId);
+      const sources = retrieval.chunks;
       this.log({
         event: "chat.retrieval",
         requestId,
-        resultCount: sources.length,
+        mode: this.mode,
+        ...retrieval.diagnostics,
       });
 
       let answer: GroundedAnswer;
       if (sources.length === 0) {
         answer = insufficientAnswer;
       } else {
-        const rateLimit = await this.options.rateLimiter.limit({
-          key: ownerSessionId,
-        });
-        if (!rateLimit.success) {
-          throw new ChatServiceError(
-            "rate_limited",
-            "Too many AI requests. Try again in a minute.",
-            true,
-          );
-        }
+        if (!rateLimitConsumed) await this.requireRateLimit(ownerSessionId);
         answer = await this.generateGroundedAnswer(
           requestId,
           request.question,
@@ -207,7 +219,7 @@ export class ChatService {
 
   async history(ownerSessionId: string, conversationId: string) {
     try {
-      const knowledgeSpaceId = await this.corpus.ensureReady();
+      const knowledgeSpaceId = await this.resolveKnowledgeSpace();
       if (
         !(await this.repository.conversationExists(
           conversationId,
@@ -234,6 +246,79 @@ export class ChatService {
         true,
         { cause: error },
       );
+    }
+  }
+
+  private async resolveKnowledgeSpace(): Promise<string> {
+    if (this.mode === "demo") return await this.corpus.ensureReady();
+    if (this.options.notionRootId === undefined) {
+      throw new ChatServiceError(
+        "knowledge_not_ready",
+        "The live knowledge source is not configured.",
+        false,
+      );
+    }
+    const spaceId = await this.repository.findLiveKnowledgeSpace(
+      this.options.notionRootId,
+    );
+    if (spaceId === null) {
+      throw new ChatServiceError(
+        "knowledge_not_ready",
+        "Complete a synchronization before asking questions.",
+        false,
+      );
+    }
+    return spaceId;
+  }
+
+  private async requireRateLimit(ownerSessionId: string): Promise<void> {
+    const rateLimit = await this.options.rateLimiter.limit({
+      key: ownerSessionId,
+    });
+    if (!rateLimit.success) {
+      throw new ChatServiceError(
+        "rate_limited",
+        "Too many AI requests. Try again in a minute.",
+        true,
+      );
+    }
+  }
+
+  private async retrieve(question: string, knowledgeSpaceId: string) {
+    if (this.mode === "demo") {
+      const chunks = retrieveChunks(
+        question,
+        await this.repository.listChunks(knowledgeSpaceId),
+        6,
+      );
+      return {
+        chunks,
+        diagnostics: {
+          lexicalCount: chunks.length,
+          semanticCount: 0,
+          hydratedCount: 0,
+          selectedCount: chunks.length,
+          staleCount: 0,
+          semanticAvailable: false,
+        },
+      };
+    }
+    try {
+      return await new HybridRetriever(
+        this.repository,
+        this.options.ai,
+        this.options.knowledgeIndex,
+      ).retrieve(question, knowledgeSpaceId);
+    } catch (error) {
+      if (error instanceof RetrievalUnavailableError) {
+        throw new ChatServiceError(
+          "retrieval_unavailable",
+          "Knowledge retrieval is temporarily unavailable. Please retry.",
+          true,
+          { cause: error },
+        );
+      }
+      throw error;
     }
   }
 
@@ -270,7 +355,11 @@ export class ChatService {
       }
 
       try {
-        return validateGroundedAnswer(generated, sources);
+        const validated = validateGroundedAnswer(generated, sources);
+        return validated.citations.length === 0 &&
+          validated.confidence === "low"
+          ? insufficientAnswer
+          : validated;
       } catch (error) {
         if (!(error instanceof InvalidGroundedAnswerError)) throw error;
         this.logAnswerRejection(requestId, attempt, error.reason);
@@ -298,11 +387,11 @@ export class ChatService {
 
 function validateGroundedAnswer(
   value: unknown,
-  sources: readonly { chunkId: string; content: string }[],
+  sources: readonly RetrievedChunk[],
 ): GroundedAnswer {
   const parsed = groundedAnswerSchema.safeParse(value);
   if (!parsed.success) throw new InvalidGroundedAnswerError("schema_invalid");
-  if (parsed.data.citations.length === 0)
+  if (parsed.data.citations.length === 0 && parsed.data.confidence !== "low")
     throw new InvalidGroundedAnswerError("missing_citations");
   const sourceById = new Map(sources.map((source) => [source.chunkId, source]));
   const cited = new Set<string>();
@@ -319,6 +408,11 @@ function validateGroundedAnswer(
       )
     )
       throw new InvalidGroundedAnswerError("quote_mismatch");
+    if (
+      source.source.sourceUrl?.startsWith("https:") === true &&
+      !isSupportedNotionUrl(source.source.sourceUrl)
+    )
+      throw new InvalidGroundedAnswerError("invalid_source_url");
   }
   return parsed.data;
 }
@@ -329,7 +423,8 @@ type AnswerRejectionReason =
   | "missing_citations"
   | "duplicate_citation"
   | "unknown_citation"
-  | "quote_mismatch";
+  | "quote_mismatch"
+  | "invalid_source_url";
 
 class InvalidGroundedAnswerError extends Error {
   override readonly name = "InvalidGroundedAnswerError";
@@ -355,6 +450,20 @@ function invalidResponse(cause?: unknown): ChatServiceError {
 
 function normalizeWhitespace(value: string): string {
   return value.trim().replace(/\s+/gu, " ");
+}
+
+function isSupportedNotionUrl(value: string): boolean {
+  try {
+    const url = new URL(value);
+    return (
+      url.protocol === "https:" &&
+      ["notion.so", "www.notion.so", "notion.com", "www.notion.com"].includes(
+        url.hostname,
+      )
+    );
+  } catch {
+    return false;
+  }
 }
 
 export function parseSessionId(value: string | undefined): string | null {

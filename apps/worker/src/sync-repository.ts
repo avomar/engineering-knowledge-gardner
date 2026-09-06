@@ -23,6 +23,7 @@ interface SyncRunRow {
   skipped_count: number;
   failed_count: number;
   deleted_count: number;
+  embedded_chunk_count: number;
   error_summary: string | null;
   error_code: string | null;
   discovery_complete: number;
@@ -294,6 +295,7 @@ function mapRun(row: SyncRunRow): SyncRun {
     skippedCount: row.skipped_count,
     failedCount: row.failed_count,
     deletedCount: row.deleted_count,
+    embeddedChunkCount: row.embedded_chunk_count ?? 0,
     errorSummary: row.error_summary,
     errorCode: row.error_code,
     discoveryComplete: row.discovery_complete === 1,

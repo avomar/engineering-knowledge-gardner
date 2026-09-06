@@ -265,7 +265,7 @@ describe("demo grounded chat", () => {
     expect(denied.headers.get("Retry-After")).toBe("60");
   });
 
-  it("fails closed outside demo mode", async () => {
+  it("requires a synchronized knowledge space in live mode", async () => {
     const response = await testApp(new FixtureAnswerGenerator()).request(
       "https://api.example.invalid/api/chat",
       {
@@ -275,9 +275,9 @@ describe("demo grounded chat", () => {
       },
       { ...environment(), APP_MODE: "live" },
     );
-    expect(response.status).toBe(503);
+    expect(response.status).toBe(409);
     expect(apiErrorResponseSchema.parse(await response.json()).error.code).toBe(
-      "mode_unavailable",
+      "knowledge_not_ready",
     );
   });
 });
@@ -354,7 +354,7 @@ async function chatRequest(
 function requestHeaders(browserSessionId: string): Record<string, string> {
   return {
     "Content-Type": "application/json",
-    "X-Demo-Session-Id": browserSessionId,
+    "X-Client-Session-Id": browserSessionId,
   };
 }
 
@@ -375,6 +375,7 @@ async function applyMigrations(target: D1Database): Promise<void> {
     "0001_initial.sql",
     "0002_chat_answer_metadata.sql",
     "0003_live_notion_sync.sql",
+    "0004_hybrid_retrieval.sql",
   ];
   for (const filename of files) {
     const migration = await readFile(

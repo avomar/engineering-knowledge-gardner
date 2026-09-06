@@ -2,7 +2,7 @@
 
 Engineering Knowledge Gardener is a private, source-grounded assistant for engineering documentation. It is designed to answer questions with citations, identify reviewable documentation-health signals, and prepare drafts that are published only after explicit approval.
 
-The repository currently implements **Phase 2-a**. The public-safe demo retains its grounded fixture chat, while private live mode can read a deliberately shared Notion hierarchy through a manually triggered Cloudflare Workflow. Live synchronization includes nested pages and database rows, stores normalized chunks and freshness in D1, and never writes to Notion. One Cloudflare Worker serves both the React SPA and its `/api` endpoints from one origin. Vectorize, live chat, and draft publishing remain later phases.
+The repository implements **Phase 3**. The public-safe demo retains deterministic fixture chat. Private live mode reads a deliberately shared Notion hierarchy through a manually triggered Cloudflare Workflow, embeds bounded chunks with Workers AI, stores semantic candidates in a private Vectorize namespace, and provides a grounded chat UI behind Cloudflare Access. D1 remains the authoritative source for text, source eligibility, citations, and conversation history; the app never writes to Notion.
 
 ## Architecture
 
@@ -14,14 +14,14 @@ flowchart LR
   API --> DB[(D1 conversations and fixture chunks)]
   Fixture[Fixture source adapter] --> DB
   API --> AI[Workers AI / Llama 3.3]
-  API -. Phase 3 .-> Vectorize
+  API --> Vectorize[Vectorize candidate index]
   API --> Workflow[Cloudflare Workflow]
   Workflow --> Notion[Selected Notion root]
 ```
 
 Cloudflare Workers Static Assets serves the Vite build while the same Worker handles `/api/*`. Shared domain schemas and source contracts keep the browser/API interface explicit. Demo sources use the same adapter shape planned for Notion, while source-neutral identifiers avoid pretending fictional pages are Notion pages.
 
-See [ADR 0001](docs/adr/0001-foundation-architecture.md), [ADR 0002](docs/adr/0002-grounded-demo-chat-architecture.md), [ADR 0003](docs/adr/0003-live-notion-workflow-sync.md), [ADR 0004](docs/adr/0004-unified-worker-static-assets.md), and [the project plan](PLAN.md) for the decisions and phased roadmap.
+See [ADR 0001](docs/adr/0001-foundation-architecture.md), [ADR 0002](docs/adr/0002-grounded-demo-chat-architecture.md), [ADR 0003](docs/adr/0003-live-notion-workflow-sync.md), [ADR 0004](docs/adr/0004-unified-worker-static-assets.md), [ADR 0005](docs/adr/0005-hybrid-retrieval-and-live-chat.md), and [the project plan](PLAN.md) for the decisions and phased roadmap.
 
 ## Repository layout
 
@@ -142,7 +142,7 @@ The browser creates an anonymous demo session UUID in local storage. It prevents
 | `GET /api/sync/:id`                   | View a run and its per-document outcomes             |
 | `GET /api/documents/search`           | Browse indexed sources and freshness                 |
 
-Chat endpoints require an `X-Demo-Session-Id` UUID. Questions are limited to 2,000 characters. AI-backed requests are limited to five per demo session per minute; unsupported questions are refused without calling the model.
+Chat endpoints require an `X-Client-Session-Id` UUID. Questions are limited to 2,000 characters. AI-backed requests are limited to five per client session per minute; unsupported questions are refused without calling the model. The old `X-Demo-Session-Id` header remains accepted only for demo compatibility.
 
 ## Configuration and future bindings
 
@@ -155,20 +155,23 @@ Phase 1 activates:
 | `CHAT_RATE_LIMITER` | Coarse per-session AI request limit |
 | `APP_MODE`          | `demo` or `live` runtime mode       |
 
-Phase 2 also activates `KNOWLEDGE_SYNC` and live-only `NOTION_TOKEN` and `NOTION_ROOT_PAGE_ID` values. The browser never receives them. Vectorize (`KNOWLEDGE_INDEX`) remains deferred.
+Phase 2 activates `KNOWLEDGE_SYNC` and live-only `NOTION_TOKEN` and `NOTION_ROOT_PAGE_ID` values. Phase 3 adds a live-only `KNOWLEDGE_INDEX` Vectorize binding. The browser never receives any of these values.
 
 ## Deployment
 
 The unified Worker serves the SPA and API from its `workers.dev` hostname; Cloudflare Pages and Vercel are not used. First create a Workers subdomain if Cloudflare asks, then authenticate interactively with `yarn cloudflare:login`.
 
-Before deployment, confirm `apps/worker/wrangler.jsonc` binds `env.live.DB` to the existing `knowledge-gardener-live` D1 database. Apply migrations, add secrets without committing them, and deploy:
+Before deployment, create the Vectorize index once, confirm `apps/worker/wrangler.jsonc` binds it as `env.live.KNOWLEDGE_INDEX`, apply migrations, add secrets without committing them, and deploy:
 
 ```sh
+yarn workspace @knowledge-gardener/worker exec wrangler vectorize create engineering-knowledge-gardener-live --dimensions=384 --metric=cosine
 yarn workspace @knowledge-gardener/worker exec wrangler d1 migrations apply DB --remote --env live
 yarn workspace @knowledge-gardener/worker exec wrangler secret put NOTION_TOKEN --env live
 yarn workspace @knowledge-gardener/worker exec wrangler secret put NOTION_ROOT_PAGE_ID --env live
 yarn deploy:live
 ```
+
+Do not clear the existing live D1 database. After deployment, start one sync so existing Phase 2 chunks are backfilled with 384-dimension vectors. Vectorize updates are eventually consistent: lexical D1 search provides immediate coverage while semantic candidates become visible. The live Chat tab becomes ready after the configured root has eligible chunks.
 
 Open the resulting Worker URL and check `/api/health`. When the SPA and API work, go to **Workers & Pages → engineering-knowledge-gardener-api-live → Access**, protect **All traffic**, and allow only the owner's Cloudflare account or chosen identity. Access is configured manually because it belongs to the account's Zero Trust policy, not the application repository. The same-origin deployment lets its browser session authenticate both navigation and `/api/*` calls.
 
@@ -186,6 +189,6 @@ Open the resulting Worker URL and check `/api/health`. When the SPA and API work
 2. **Demo grounded chat** — complete.
 3. **Live Notion synchronization** — complete; scoped reads, database rows, freshness, and a manual Workflow.
 4. **Unified SPA/API deployment** — complete; one Worker origin, Static Assets, and Access-ready routing.
-5. **Hybrid retrieval** — Vectorize, exact search, citation validation, and live chat.
+5. **Hybrid retrieval and live chat** — complete; Vectorize, D1 FTS, citation validation, and Access-ready chat.
 6. **Safe draft publishing** — editable drafts, approval, fixed parent, and idempotency.
 7. **Garden and submission polish** — review suggestions, feedback, and hardening.

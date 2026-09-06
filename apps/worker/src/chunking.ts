@@ -1,6 +1,11 @@
 import type { DocumentChunk } from "@knowledge-gardener/domain";
 
 const namespace = "77902f23-8ec3-5c25-a03e-2f91222980d1";
+export const CHUNKING_VERSION = 2;
+const targetTokens = 360;
+const maximumTokens = 400;
+const overlapTokens = 60;
+const maximumPrefixTokens = 48;
 
 export async function checksum(value: string): Promise<string> {
   const digest = await crypto.subtle.digest(
@@ -32,16 +37,17 @@ export async function chunkDocument(input: {
   markdown: string;
   createdAt: string;
 }): Promise<DocumentChunk[]> {
-  const prefix = `Source: ${input.title}\nPath: ${input.breadcrumb.join(" / ")}\n\n`;
-  const words = input.markdown.trim().split(/\s+/u);
+  const prefix = boundedPrefix(input.title, input.breadcrumb);
+  const prefixTokenCount = estimateTokens(prefix);
+  const maximumBodyTokens = Math.max(1, maximumTokens - prefixTokenCount);
+  const targetBodyTokens = Math.max(1, targetTokens - prefixTokenCount);
+  const words = input.markdown.trim().split(/\s+/u).filter(Boolean);
   const chunks: string[] = [];
-  const target = Math.max(1, 600 - estimateTokens(prefix));
-  const overlap = 80;
   for (let start = 0; start < words.length;) {
-    const end = Math.min(words.length, start + target);
+    const end = findEnd(words, start, targetBodyTokens, maximumBodyTokens);
     chunks.push(`${prefix}${words.slice(start, end).join(" ")}`.trim());
     if (end === words.length) break;
-    start = Math.max(start + 1, end - overlap);
+    start = Math.max(start + 1, end - overlapTokens);
   }
   if (chunks.length === 0) chunks.push(prefix.trim());
   return await Promise.all(
@@ -49,7 +55,7 @@ export async function chunkDocument(input: {
       const chunkChecksum = await checksum(content);
       return {
         id: await stableUuid(
-          `notion:chunk:${input.sourcePageId}:${ordinal}:${chunkChecksum}`,
+          `notion:chunk:v${CHUNKING_VERSION}:${input.sourcePageId}:${ordinal}:${chunkChecksum}`,
         ),
         documentId: input.documentId,
         ordinal,
@@ -60,6 +66,26 @@ export async function chunkDocument(input: {
       };
     }),
   );
+}
+
+function boundedPrefix(title: string, breadcrumb: string[]): string {
+  const candidates = [`Source: ${title}`, `Path: ${breadcrumb.join(" / ")}`];
+  const words = candidates.join("\n").split(/\s+/u);
+  return `${words.slice(0, maximumPrefixTokens).join(" ")}\n\n`;
+}
+
+function findEnd(
+  words: readonly string[],
+  start: number,
+  target: number,
+  maximum: number,
+): number {
+  const hardEnd = Math.min(words.length, start + maximum);
+  const preferredEnd = Math.min(hardEnd, start + target);
+  for (let end = preferredEnd; end > start + Math.min(20, target); end -= 1) {
+    if (/[.!?]$/u.test(words[end - 1] ?? "")) return end;
+  }
+  return preferredEnd;
 }
 
 export function estimateTokens(value: string): number {

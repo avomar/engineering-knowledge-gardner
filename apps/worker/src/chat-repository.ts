@@ -39,6 +39,8 @@ interface ChunkRow {
   breadcrumb_json: string;
   source_url: string | null;
   last_edited_at: string;
+  last_synced_at: string | null;
+  index_status: string;
 }
 
 export interface StoredTurnInput {
@@ -114,15 +116,86 @@ export class ChatRepository {
       .prepare(
         `SELECT c.id AS chunk_id, c.content, d.id AS document_id,
                 d.source_page_id, d.title, d.breadcrumb_json,
-                d.source_url, d.last_edited_at
+                d.source_url, d.last_edited_at, d.last_synced_at, d.index_status
          FROM document_chunks c
          JOIN documents d ON d.id = c.document_id
-         WHERE d.knowledge_space_id = ? AND d.index_status = 'indexed'
+         WHERE d.knowledge_space_id = ? AND d.index_status IN ('indexed', 'stale')
          ORDER BY d.title ASC, c.ordinal ASC`,
       )
       .bind(knowledgeSpaceId)
       .all<ChunkRow>();
     return result.results.map(mapChunk);
+  }
+
+  async hasEligibleChunks(knowledgeSpaceId: string): Promise<boolean> {
+    const count = await this.database
+      .prepare(
+        `SELECT COUNT(*) AS count FROM document_chunks c JOIN documents d ON d.id = c.document_id
+         WHERE d.knowledge_space_id = ? AND d.index_status IN ('indexed', 'stale')`,
+      )
+      .bind(knowledgeSpaceId)
+      .first<number>("count");
+    return (count ?? 0) > 0;
+  }
+
+  async findLiveKnowledgeSpace(rootId: string): Promise<string | null> {
+    const row = await this.database
+      .prepare(
+        "SELECT id FROM knowledge_spaces WHERE mode = 'live' AND source_root_id = ?",
+      )
+      .bind(rootId)
+      .first<{ id: string }>();
+    return row?.id ?? null;
+  }
+
+  async listLexicalChunks(
+    knowledgeSpaceId: string,
+    question: string,
+    limit: number,
+  ): Promise<RetrievedChunk[]> {
+    const expression = ftsExpression(question);
+    if (expression === null) return [];
+    const result = await this.database
+      .prepare(
+        `SELECT c.id AS chunk_id, c.content, d.id AS document_id, d.source_page_id,
+                d.title, d.breadcrumb_json, d.source_url, d.last_edited_at,
+                d.last_synced_at, d.index_status
+         FROM document_chunks_fts f
+         JOIN document_chunks c ON c.rowid = f.rowid
+         JOIN documents d ON d.id = c.document_id
+         WHERE document_chunks_fts MATCH ? AND d.knowledge_space_id = ?
+           AND d.index_status IN ('indexed', 'stale')
+         ORDER BY bm25(document_chunks_fts), d.title, c.ordinal LIMIT ?`,
+      )
+      .bind(expression, knowledgeSpaceId, limit)
+      .all<ChunkRow>();
+    return result.results.map(mapChunk);
+  }
+
+  async hydrateChunks(
+    knowledgeSpaceId: string,
+    chunkIds: readonly string[],
+  ): Promise<RetrievedChunk[]> {
+    if (chunkIds.length === 0) return [];
+    const placeholders = chunkIds.map(() => "?").join(", ");
+    const result = await this.database
+      .prepare(
+        `SELECT c.id AS chunk_id, c.content, d.id AS document_id,
+                d.source_page_id, d.title, d.breadcrumb_json, d.source_url,
+                d.last_edited_at, d.last_synced_at, d.index_status
+         FROM document_chunks c JOIN documents d ON d.id = c.document_id
+         WHERE d.knowledge_space_id = ? AND d.index_status IN ('indexed', 'stale')
+           AND c.id IN (${placeholders})`,
+      )
+      .bind(knowledgeSpaceId, ...chunkIds)
+      .all<ChunkRow>();
+    const byId = new Map(
+      result.results.map((row) => [row.chunk_id, mapChunk(row)]),
+    );
+    return chunkIds.flatMap((id) => {
+      const chunk = byId.get(id);
+      return chunk === undefined ? [] : [chunk];
+    });
   }
 
   async saveTurn(input: StoredTurnInput): Promise<void> {
@@ -192,7 +265,7 @@ export class ChatRepository {
         .prepare(
           `SELECT c.id AS chunk_id, c.content, d.id AS document_id,
                   d.source_page_id, d.title, d.breadcrumb_json,
-                  d.source_url, d.last_edited_at
+                  d.source_url, d.last_edited_at, d.last_synced_at, d.index_status
            FROM document_chunks c
            JOIN documents d ON d.id = c.document_id
            WHERE c.id IN (${placeholders})`,
@@ -267,6 +340,20 @@ function mapChunk(row: ChunkRow): RetrievedChunk {
       breadcrumb: JSON.parse(row.breadcrumb_json) as string[],
       sourceUrl: row.source_url,
       lastEditedAt: row.last_edited_at,
+      lastSyncedAt: row.last_synced_at,
+      sourceState: row.index_status === "stale" ? "stale" : "current",
     },
   };
+}
+
+function ftsExpression(question: string): string | null {
+  const tokens = question
+    .normalize("NFKC")
+    .toLocaleLowerCase("en-US")
+    .match(/[\p{L}\p{N}]+(?:-[\p{L}\p{N}]+)*/gu)
+    ?.filter((token) => token.length > 1)
+    .slice(0, 12);
+  return tokens === undefined || tokens.length === 0
+    ? null
+    : tokens.map((token) => `"${token.replaceAll('"', "")}"`).join(" OR ");
 }

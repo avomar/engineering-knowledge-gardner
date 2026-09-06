@@ -52,6 +52,12 @@ export function createApp(options: AppOptions = {}) {
                 ? "error"
                 : "ok"
               : "not_applicable",
+          ...(context.env.APP_MODE === "live"
+            ? {
+                semanticIndex:
+                  context.env.KNOWLEDGE_INDEX === undefined ? "error" : "ok",
+              }
+            : {}),
         },
       };
       return context.json(healthResponseSchema.parse(response), 200);
@@ -63,6 +69,9 @@ export function createApp(options: AppOptions = {}) {
           database: "error",
           sourceConfiguration:
             context.env.APP_MODE === "live" ? "error" : "not_applicable",
+          ...(context.env.APP_MODE === "live"
+            ? { semanticIndex: "error" }
+            : {}),
         },
       };
       return context.json(healthResponseSchema.parse(response), 503);
@@ -70,18 +79,14 @@ export function createApp(options: AppOptions = {}) {
   });
 
   api.post("/chat", async (context) => {
-    if (context.env.APP_MODE !== "demo") {
-      return errorResponse(
-        context,
-        "mode_unavailable",
-        "Demo chat is unavailable in this application mode.",
-        false,
-        503,
-      );
-    }
-    const sessionId = parseSessionId(context.req.header("X-Demo-Session-Id"));
+    const sessionId = parseSessionId(
+      context.req.header("X-Client-Session-Id") ??
+        (context.env.APP_MODE === "demo"
+          ? context.req.header("X-Demo-Session-Id")
+          : undefined),
+    );
     if (sessionId === null) {
-      return validationError(context, "A valid demo session ID is required.");
+      return validationError(context, "A valid client session ID is required.");
     }
     let input: unknown;
     try {
@@ -106,16 +111,12 @@ export function createApp(options: AppOptions = {}) {
   });
 
   api.get("/conversations/:conversationId/messages", async (context) => {
-    if (context.env.APP_MODE !== "demo") {
-      return errorResponse(
-        context,
-        "mode_unavailable",
-        "Demo chat is unavailable in this application mode.",
-        false,
-        503,
-      );
-    }
-    const sessionId = parseSessionId(context.req.header("X-Demo-Session-Id"));
+    const sessionId = parseSessionId(
+      context.req.header("X-Client-Session-Id") ??
+        (context.env.APP_MODE === "demo"
+          ? context.req.header("X-Demo-Session-Id")
+          : undefined),
+    );
     const conversationId = idSchema.safeParse(
       context.req.param("conversationId"),
     );
@@ -296,10 +297,18 @@ function createChatService(environment: Env, options: AppOptions): ChatService {
     ((record: Record<string, unknown>) => console.log(JSON.stringify(record)));
   return new ChatService({
     database: environment.DB,
+    ai: environment.AI,
     answerGenerator:
       options.createAnswerGenerator?.(environment) ??
       new WorkersAiAnswerGenerator(environment.AI, log),
     rateLimiter: environment.CHAT_RATE_LIMITER,
+    mode: environment.APP_MODE,
+    ...(environment.NOTION_ROOT_PAGE_ID === undefined
+      ? {}
+      : { notionRootId: environment.NOTION_ROOT_PAGE_ID }),
+    ...(environment.KNOWLEDGE_INDEX === undefined
+      ? {}
+      : { knowledgeIndex: environment.KNOWLEDGE_INDEX }),
     ...(options.now === undefined ? {} : { now: options.now }),
     ...(options.createId === undefined ? {} : { createId: options.createId }),
     log,
@@ -322,7 +331,9 @@ function handleChatError(context: Context, error: unknown) {
     invalid_ai_response: 502,
     ai_unavailable: 503,
     database_unavailable: 503,
-  }[error.code] as 404 | 429 | 502 | 503;
+    knowledge_not_ready: 409,
+    retrieval_unavailable: 503,
+  }[error.code] as 404 | 409 | 429 | 502 | 503;
   if (error.code === "rate_limited") context.header("Retry-After", "60");
   return errorResponse(
     context,
@@ -367,7 +378,7 @@ function errorResponse(
   code: ApiErrorCode,
   message: string,
   retryable: boolean,
-  status: 202 | 400 | 404 | 429 | 502 | 503,
+  status: 202 | 400 | 404 | 409 | 429 | 502 | 503,
 ) {
   return context.json(
     apiErrorResponseSchema.parse({ error: { code, message, retryable } }),

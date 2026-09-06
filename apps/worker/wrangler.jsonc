@@ -69,6 +69,13 @@
         "binding": "AI",
         "remote": true,
       },
+      "vectorize": [
+        {
+          "binding": "KNOWLEDGE_INDEX",
+          "index_name": "engineering-knowledge-gardener-live",
+          "remote": true,
+        },
+      ],
       "ratelimits": [
         {
           "name": "CHAT_RATE_LIMITER",

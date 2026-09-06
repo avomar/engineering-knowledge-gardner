@@ -432,7 +432,7 @@ The UI exposes run status and actionable errors; the repository documents where 
 
 ### Phase 3 — Hybrid semantic retrieval and evaluation integrity
 
-**Deliverable:** Vectorize indexing, hybrid retrieval, citation-ID validation, retrieval telemetry, and expanded evaluation suite.
+**Deliverable:** Vectorize indexing, hybrid retrieval, live grounded chat, citation-ID validation, retrieval telemetry, and expanded evaluation suite.
 
 **Acceptance criteria:**
 
@@ -440,6 +440,7 @@ The UI exposes run status and actionable errors; the repository documents where 
 - Every answer citation maps to a retrieved D1 chunk and Notion page URL.
 - The model cannot return a cited source it was not given.
 - Retrieval and context caps remain within the documented free-tier guardrails.
+- The Access-protected live SPA can ask questions, restore its session-scoped history, and open cited Notion pages.
 
 ### Phase 4 — Safe Notion draft publishing
 

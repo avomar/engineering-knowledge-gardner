@@ -32,6 +32,7 @@ beforeAll(async () => {
       "0001_initial.sql",
       "0002_chat_answer_metadata.sql",
       "0003_live_notion_sync.sql",
+      "0004_hybrid_retrieval.sql",
     ].map((filename) =>
       readFile(path.join(directory, "../migrations", filename), "utf8"),
     ),
@@ -114,6 +115,21 @@ describe("D1 foundation", () => {
       .all<{ name: string }>();
     expect(tables.results.map(({ name }) => name)).toContain(
       "sync_run_documents",
+    );
+  });
+
+  it("adds hybrid retrieval and vector lifecycle state", async () => {
+    const chunks = await database
+      .prepare("PRAGMA table_info(document_chunks)")
+      .all<{ name: string }>();
+    expect(chunks.results.map(({ name }) => name)).toEqual(
+      expect.arrayContaining(["embedding_model", "embedding_version"]),
+    );
+    const tables = await database
+      .prepare("SELECT name FROM sqlite_master WHERE type = 'table'")
+      .all<{ name: string }>();
+    expect(tables.results.map(({ name }) => name)).toEqual(
+      expect.arrayContaining(["vector_deletion_queue", "document_chunks_fts"]),
     );
   });
 

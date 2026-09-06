@@ -37,6 +37,7 @@ test("starts a live sync and renders completed counts", async ({ page }) => {
   });
 
   await page.goto("/");
+  await page.getByRole("button", { name: "sync", exact: true }).click();
   await expect(
     page.getByRole("heading", { name: "Keep the source garden current." }),
   ).toBeVisible();

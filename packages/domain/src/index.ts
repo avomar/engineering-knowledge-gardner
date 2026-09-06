@@ -50,6 +50,7 @@ export const healthResponseSchema = z.object({
   checks: z.object({
     database: z.enum(["ok", "error"]),
     sourceConfiguration: z.enum(["ok", "error", "not_applicable"]).optional(),
+    semanticIndex: z.enum(["ok", "error", "not_applicable"]).optional(),
   }),
 });
 
@@ -111,6 +112,7 @@ export const syncRunSchema = z.object({
   skippedCount: z.number().int().nonnegative(),
   failedCount: z.number().int().nonnegative(),
   deletedCount: z.number().int().nonnegative().default(0),
+  embeddedChunkCount: z.number().int().nonnegative().default(0),
   errorSummary: z.string().max(2_000).nullable(),
   errorCode: z.string().trim().min(1).max(100).nullable().default(null),
   discoveryComplete: z.boolean().default(false),
@@ -236,6 +238,11 @@ export const sourceCardSchema = z.object({
   breadcrumb: z.array(z.string().trim().min(1).max(500)),
   sourceUrl: z.string().url().nullable(),
   lastEditedAt: isoDateTimeSchema,
+  lastSyncedAt: nullableIsoDateTimeSchema.optional().default(null),
+  sourceState: z
+    .enum(["current", "stale", "removed"])
+    .optional()
+    .default("current"),
 });
 
 export const chatCitationSchema = citationSchema.extend({
@@ -280,6 +287,8 @@ export const apiErrorCodeSchema = z.enum([
   "invalid_ai_response",
   "ai_unavailable",
   "database_unavailable",
+  "knowledge_not_ready",
+  "retrieval_unavailable",
   "mode_unavailable",
   "source_configuration_error",
   "notion_access_denied",

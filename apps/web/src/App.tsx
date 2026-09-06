@@ -93,7 +93,7 @@ export function App() {
     void fetch(
       `${apiBaseUrl}/conversations/${encodeURIComponent(storedConversationId)}/messages`,
       {
-        headers: { "X-Demo-Session-Id": sessionId },
+        headers: { "X-Client-Session-Id": sessionId },
         signal: controller.signal,
       },
     )
@@ -149,7 +149,7 @@ export function App() {
         method: "POST",
         headers: {
           "Content-Type": "application/json",
-          "X-Demo-Session-Id": sessionId,
+          "X-Client-Session-Id": sessionId,
         },
         body: JSON.stringify({
           question: submitted,
@@ -342,7 +342,7 @@ export function App() {
   );
 }
 
-type LiveView = "sync" | "sources";
+type LiveView = "chat" | "sync" | "sources";
 
 function LiveWorkspace({
   configured,
@@ -359,6 +359,7 @@ function LiveWorkspace({
   const [loading, setLoading] = useState(true);
   const [starting, setStarting] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const initialViewResolved = useRef(false);
 
   const loadOverview = useCallback(async () => {
     try {
@@ -401,6 +402,19 @@ function LiveWorkspace({
   }, [loadOverview]);
 
   const activeRun = overview?.runs.find((run) => isActive(run));
+  useEffect(() => {
+    if (overview === null || initialViewResolved.current) return;
+    initialViewResolved.current = true;
+    if (
+      overview?.knowledgeSpace !== null &&
+      overview?.knowledgeSpace !== undefined &&
+      overview.runs.some(
+        (run) => run.status === "completed" || run.status === "partial",
+      )
+    ) {
+      setView("chat");
+    }
+  }, [overview]);
   useEffect(() => {
     if (activeRun === undefined) return;
     const timer = window.setInterval(() => void loadOverview(), 2_000);
@@ -446,7 +460,7 @@ function LiveWorkspace({
         </header>
         <div className="grid gap-8 py-7 lg:grid-cols-[14rem_minmax(0,1fr)]">
           <nav aria-label="Live workspace" className="space-y-2">
-            {(["sync", "sources"] as const).map((item) => (
+            {(["chat", "sync", "sources"] as const).map((item) => (
               <button
                 className={`w-full rounded-xl px-4 py-3 text-left text-sm font-semibold capitalize ${view === item ? "bg-emerald-300 text-emerald-950" : "text-stone-400 hover:bg-white/5 hover:text-white"}`}
                 key={item}
@@ -457,7 +471,8 @@ function LiveWorkspace({
               </button>
             ))}
             <div className="mt-6 border-t border-white/10 pt-5 text-xs leading-5 text-stone-600">
-              Live chat becomes available after Phase 3 hybrid retrieval.
+              Answers are grounded in your indexed Notion sources. Verify
+              important decisions against the cited page.
             </div>
           </nav>
           <section className="min-w-0">
@@ -466,6 +481,18 @@ function LiveWorkspace({
                 Add the token and root page ID to the ignored live variables
                 file, migrate the live database, and restart the Worker.
               </Notice>
+            ) : view === "chat" ? (
+              <LiveChat
+                onOpenSync={() => setView("sync")}
+                ready={
+                  overview?.knowledgeSpace !== null &&
+                  overview?.knowledgeSpace !== undefined &&
+                  overview.runs.some(
+                    (run) =>
+                      run.status === "completed" || run.status === "partial",
+                  )
+                }
+              />
             ) : view === "sync" ? (
               <SyncView
                 detail={detail}
@@ -482,6 +509,185 @@ function LiveWorkspace({
         </div>
       </div>
     </main>
+  );
+}
+
+const liveSessionStorageKey = "knowledge-gardener.live-session-id";
+const liveConversationStorageKey = "knowledge-gardener.live-conversation-id";
+
+function LiveChat({
+  onOpenSync,
+  ready,
+}: {
+  onOpenSync: () => void;
+  ready: boolean;
+}) {
+  const [sessionId] = useState(() => getOrCreateId(liveSessionStorageKey));
+  const [conversationId, setConversationId] = useState(() =>
+    getStoredId(liveConversationStorageKey),
+  );
+  const [messages, setMessages] = useState<ChatMessage[]>([]);
+  const [question, setQuestion] = useState("");
+  const [sending, setSending] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+
+  useEffect(() => {
+    if (conversationId === null) return;
+    const controller = new AbortController();
+    void fetch(`${apiBaseUrl}/conversations/${conversationId}/messages`, {
+      headers: { "X-Client-Session-Id": sessionId },
+      signal: controller.signal,
+    })
+      .then(async (response) => {
+        const raw: unknown = await response.json();
+        if (!response.ok)
+          throw apiFailure(raw, "Chat history could not be restored.");
+        setMessages(conversationMessagesResponseSchema.parse(raw).messages);
+      })
+      .catch(() => {
+        localStorage.removeItem(liveConversationStorageKey);
+        setConversationId(null);
+      });
+    return () => controller.abort();
+  }, [conversationId, sessionId]);
+
+  async function send() {
+    const submitted = question.trim();
+    if (
+      !ready ||
+      submitted.length === 0 ||
+      submitted.length > maximumQuestionLength ||
+      sending
+    )
+      return;
+    setSending(true);
+    setError(null);
+    try {
+      const response = await fetch(`${apiBaseUrl}/chat`, {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          "X-Client-Session-Id": sessionId,
+        },
+        body: JSON.stringify({
+          question: submitted,
+          ...(conversationId === null ? {} : { conversationId }),
+        }),
+      });
+      const raw: unknown = await response.json();
+      if (!response.ok)
+        throw apiFailure(raw, "The question could not be answered.");
+      const result = chatResponseSchema.parse(raw);
+      localStorage.setItem(liveConversationStorageKey, result.conversationId);
+      setConversationId(result.conversationId);
+      setMessages((current) => [
+        ...current,
+        result.userMessage,
+        result.assistantMessage,
+      ]);
+      setQuestion("");
+    } catch (caught) {
+      setError(messageFrom(caught, "The question could not be answered."));
+      setQuestion(submitted);
+    } finally {
+      setSending(false);
+    }
+  }
+
+  if (!ready) {
+    return (
+      <div>
+        <Notice title="Sync before asking">
+          This Notion root has no completed synchronization yet. Run a sync,
+          then return here to ask grounded questions.
+        </Notice>
+        <button
+          className="mt-4 rounded-xl bg-emerald-300 px-4 py-2 text-sm font-bold text-emerald-950"
+          onClick={onOpenSync}
+          type="button"
+        >
+          Open sync
+        </button>
+      </div>
+    );
+  }
+  return (
+    <div className="flex min-h-[calc(100vh-13rem)] flex-col rounded-2xl border border-white/10 bg-white/[0.025]">
+      <div className="border-b border-white/10 px-5 py-4">
+        <p className="font-mono text-xs uppercase tracking-[0.2em] text-emerald-300">
+          Grounded chat
+        </p>
+        <p className="mt-2 text-sm text-stone-400">
+          Searching your indexed Notion sources. Answers can be incomplete;
+          verify citations.
+        </p>
+      </div>
+      <div className="flex-1 space-y-6 overflow-y-auto p-5" role="log">
+        {messages.length === 0 ? (
+          <Notice title="Ask your knowledge garden">
+            Ask about a runbook, incident, or architecture decision in the
+            synchronized Notion hierarchy.
+          </Notice>
+        ) : (
+          messages.map((message) => (
+            <MessageCard key={message.id} live message={message} />
+          ))
+        )}
+        {sending ? (
+          <StatusMessage>Searching your indexed Notion sources…</StatusMessage>
+        ) : null}
+      </div>
+      <form
+        className="border-t border-white/10 p-4"
+        onSubmit={(event) => {
+          event.preventDefault();
+          void send();
+        }}
+      >
+        {error === null ? null : (
+          <div
+            className="mb-3 rounded-xl bg-rose-400/10 px-4 py-3 text-sm text-rose-200"
+            role="alert"
+          >
+            {error}
+          </div>
+        )}
+        <textarea
+          aria-label="Ask the live knowledge base"
+          className="min-h-24 w-full rounded-xl border border-white/10 bg-black/20 p-3 text-sm outline-none focus:border-emerald-300/50"
+          maxLength={maximumQuestionLength}
+          onChange={(event) => setQuestion(event.target.value)}
+          onKeyDown={(event) => {
+            if (event.key === "Enter" && !event.shiftKey) {
+              event.preventDefault();
+              void send();
+            }
+          }}
+          placeholder="Ask about your indexed Notion sources…"
+          value={question}
+        />
+        <div className="mt-3 flex justify-between gap-3">
+          <button
+            className="rounded-xl border border-white/10 px-4 py-2 text-sm"
+            onClick={() => {
+              localStorage.removeItem(liveConversationStorageKey);
+              setConversationId(null);
+              setMessages([]);
+            }}
+            type="button"
+          >
+            New chat
+          </button>
+          <button
+            className="rounded-xl bg-emerald-300 px-4 py-2 text-sm font-bold text-emerald-950 disabled:opacity-40"
+            disabled={sending || question.trim().length === 0}
+            type="submit"
+          >
+            {sending ? "Answering…" : "Ask"}
+          </button>
+        </div>
+      </form>
+    </div>
   );
 }
 
@@ -797,7 +1003,10 @@ function safeLiveSourceUrl(value: string | null): string | null {
   if (value === null) return null;
   try {
     const url = new URL(value);
-    return url.protocol === "https:" && url.hostname === "www.notion.so"
+    return url.protocol === "https:" &&
+      ["notion.so", "www.notion.so", "notion.com", "www.notion.com"].includes(
+        url.hostname,
+      )
       ? url.toString()
       : null;
   } catch {
@@ -840,7 +1049,13 @@ function EmptyState({ onSelect }: { onSelect: (prompt: string) => void }) {
   );
 }
 
-function MessageCard({ message }: { message: ChatMessage }) {
+function MessageCard({
+  live = false,
+  message,
+}: {
+  live?: boolean;
+  message: ChatMessage;
+}) {
   if (message.role === "user") {
     return (
       <article className="ml-auto max-w-2xl rounded-2xl rounded-br-md bg-stone-100 px-4 py-3 text-sm leading-6 text-stone-900">
@@ -872,10 +1087,22 @@ function MessageCard({ message }: { message: ChatMessage }) {
             >
               <div className="flex items-start justify-between gap-3">
                 <h2 className="text-sm font-semibold text-stone-200">
-                  {citation.source.title}
+                  {live &&
+                  safeLiveSourceUrl(citation.source.sourceUrl) !== null ? (
+                    <a
+                      className="text-emerald-200 hover:underline"
+                      href={safeLiveSourceUrl(citation.source.sourceUrl)!}
+                      rel="noopener noreferrer"
+                      target="_blank"
+                    >
+                      {citation.source.title}
+                    </a>
+                  ) : (
+                    citation.source.title
+                  )}
                 </h2>
                 <span className="shrink-0 rounded-full bg-sky-300/10 px-2 py-1 text-[0.6rem] font-semibold uppercase tracking-wider text-sky-200">
-                  Fictional
+                  {live ? citation.source.sourceState : "Fictional"}
                 </span>
               </div>
               <p className="mt-1 truncate text-xs text-stone-600">
@@ -951,17 +1178,25 @@ function HealthBadge({
 }
 
 function getOrCreateSessionId(): string {
-  const stored = localStorage.getItem(sessionStorageKey);
+  return getOrCreateId(sessionStorageKey);
+}
+
+function getOrCreateId(storageKey: string): string {
+  const stored = localStorage.getItem(storageKey);
   if (idSchema.safeParse(stored).success && stored !== null) return stored;
   const created = crypto.randomUUID();
-  localStorage.setItem(sessionStorageKey, created);
+  localStorage.setItem(storageKey, created);
   return created;
 }
 
 function getStoredConversationId(): string | null {
-  const stored = localStorage.getItem(conversationStorageKey);
+  return getStoredId(conversationStorageKey);
+}
+
+function getStoredId(storageKey: string): string | null {
+  const stored = localStorage.getItem(storageKey);
   if (idSchema.safeParse(stored).success && stored !== null) return stored;
-  localStorage.removeItem(conversationStorageKey);
+  localStorage.removeItem(storageKey);
   return null;
 }
 
