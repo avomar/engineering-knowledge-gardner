@@ -1,3 +1,4 @@
-# Copy to .dev.vars.live and replace both values. Never commit that file.
+# Copy to .dev.vars.live and replace all values. Never commit that file.
 NOTION_TOKEN="secret_your_internal_connection_token"
 NOTION_ROOT_PAGE_ID="00000000-0000-0000-0000-000000000000"
+NOTION_DRAFTS_PARENT_ID="00000000-0000-0000-0000-000000000000"

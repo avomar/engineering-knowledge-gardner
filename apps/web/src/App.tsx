@@ -3,6 +3,9 @@ import {
   chatResponseSchema,
   conversationMessagesResponseSchema,
   documentSearchResponseSchema,
+  draftListResponseSchema,
+  draftSchema,
+  publishDraftResponseSchema,
   healthResponseSchema,
   idSchema,
   syncDetailResponseSchema,
@@ -10,6 +13,7 @@ import {
   syncStartResponseSchema,
   type ChatMessage,
   type DocumentSearchItem,
+  type Draft,
   type HealthResponse,
   type SyncOverviewResponse,
   type SyncRun,
@@ -342,7 +346,7 @@ export function App() {
   );
 }
 
-type LiveView = "chat" | "sync" | "sources";
+type LiveView = "chat" | "sync" | "sources" | "drafts";
 
 function LiveWorkspace({
   configured,
@@ -452,7 +456,7 @@ function LiveWorkspace({
                 Engineering Knowledge Gardener
               </p>
               <p className="text-xs text-stone-500">
-                Private Notion source · read only
+                Private Notion source · reviewed writes only
               </p>
             </div>
           </div>
@@ -460,7 +464,7 @@ function LiveWorkspace({
         </header>
         <div className="grid gap-8 py-7 lg:grid-cols-[14rem_minmax(0,1fr)]">
           <nav aria-label="Live workspace" className="space-y-2">
-            {(["chat", "sync", "sources"] as const).map((item) => (
+            {(["chat", "sync", "sources", "drafts"] as const).map((item) => (
               <button
                 className={`w-full rounded-xl px-4 py-3 text-left text-sm font-semibold capitalize ${view === item ? "bg-emerald-300 text-emerald-950" : "text-stone-400 hover:bg-white/5 hover:text-white"}`}
                 key={item}
@@ -483,6 +487,7 @@ function LiveWorkspace({
               </Notice>
             ) : view === "chat" ? (
               <LiveChat
+                onOpenDrafts={() => setView("drafts")}
                 onOpenSync={() => setView("sync")}
                 ready={
                   overview?.knowledgeSpace !== null &&
@@ -502,8 +507,10 @@ function LiveWorkspace({
                 overview={overview}
                 starting={starting}
               />
-            ) : (
+            ) : view === "sources" ? (
               <SourcesView />
+            ) : (
+              <DraftsView />
             )}
           </section>
         </div>
@@ -516,9 +523,11 @@ const liveSessionStorageKey = "knowledge-gardener.live-session-id";
 const liveConversationStorageKey = "knowledge-gardener.live-conversation-id";
 
 function LiveChat({
+  onOpenDrafts,
   onOpenSync,
   ready,
 }: {
+  onOpenDrafts: () => void;
   onOpenSync: () => void;
   ready: boolean;
 }) {
@@ -530,6 +539,7 @@ function LiveChat({
   const [question, setQuestion] = useState("");
   const [sending, setSending] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [draftingId, setDraftingId] = useState<string | null>(null);
 
   useEffect(() => {
     if (conversationId === null) return;
@@ -594,6 +604,31 @@ function LiveChat({
     }
   }
 
+  async function createDraft(sourceMessageId: string) {
+    if (draftingId !== null) return;
+    setDraftingId(sourceMessageId);
+    setError(null);
+    try {
+      const response = await fetch(`${apiBaseUrl}/drafts`, {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          "X-Client-Session-Id": sessionId,
+        },
+        body: JSON.stringify({ sourceMessageId }),
+      });
+      const raw: unknown = await response.json();
+      if (!response.ok)
+        throw apiFailure(raw, "The draft could not be created.");
+      draftSchema.parse(raw);
+      onOpenDrafts();
+    } catch (caught) {
+      setError(messageFrom(caught, "The draft could not be created."));
+    } finally {
+      setDraftingId(null);
+    }
+  }
+
   if (!ready) {
     return (
       <div>
@@ -630,7 +665,13 @@ function LiveChat({
           </Notice>
         ) : (
           messages.map((message) => (
-            <MessageCard key={message.id} live message={message} />
+            <MessageCard
+              drafting={draftingId === message.id}
+              key={message.id}
+              live
+              message={message}
+              onCreateDraft={createDraft}
+            />
           ))
         )}
         {sending ? (
@@ -687,6 +728,215 @@ function LiveChat({
           </button>
         </div>
       </form>
+    </div>
+  );
+}
+
+function DraftsView() {
+  const [sessionId] = useState(() => getOrCreateId(liveSessionStorageKey));
+  const [drafts, setDrafts] = useState<Draft[]>([]);
+  const [selected, setSelected] = useState<Draft | null>(null);
+  const [loading, setLoading] = useState(true);
+  const [saving, setSaving] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const load = useCallback(async () => {
+    try {
+      const response = await fetch(`${apiBaseUrl}/drafts`, {
+        headers: { "X-Client-Session-Id": sessionId },
+      });
+      const raw: unknown = await response.json();
+      if (!response.ok) throw apiFailure(raw, "Drafts could not be loaded.");
+      const next = draftListResponseSchema.parse(raw).items;
+      setDrafts(next);
+      setSelected((current) =>
+        current === null
+          ? (next[0] ?? null)
+          : (next.find((draft) => draft.id === current.id) ?? null),
+      );
+    } catch (caught) {
+      setError(messageFrom(caught, "Drafts could not be loaded."));
+    } finally {
+      setLoading(false);
+    }
+  }, [sessionId]);
+  useEffect(() => {
+    void load();
+  }, [load]);
+  async function act(action: "save" | "discard" | "publish") {
+    if (selected === null || saving) return;
+    if (
+      action === "publish" &&
+      !window.confirm(
+        "Create one new Notion page below the configured AI Drafts parent? Existing Notion pages are never changed.",
+      )
+    )
+      return;
+    setSaving(true);
+    setError(null);
+    try {
+      const response = await fetch(
+        action === "save"
+          ? `${apiBaseUrl}/drafts/${selected.id}`
+          : `${apiBaseUrl}/drafts/${selected.id}/${action}`,
+        {
+          method: action === "save" ? "PATCH" : "POST",
+          headers: {
+            "Content-Type": "application/json",
+            "X-Client-Session-Id": sessionId,
+          },
+          body: JSON.stringify(
+            action === "save"
+              ? {
+                  title: selected.title,
+                  contentMarkdown: selected.contentMarkdown,
+                  assumptions: selected.assumptions,
+                  version: selected.version,
+                }
+              : action === "publish"
+                ? { version: selected.version, confirmed: true }
+                : { version: selected.version },
+          ),
+        },
+      );
+      const raw: unknown = await response.json();
+      if (!response.ok) throw apiFailure(raw, "The draft action failed.");
+      setSelected(
+        action === "publish"
+          ? publishDraftResponseSchema.parse(raw).draft
+          : draftSchema.parse(raw),
+      );
+      await load();
+    } catch (caught) {
+      setError(messageFrom(caught, "The draft action failed."));
+    } finally {
+      setSaving(false);
+    }
+  }
+  return (
+    <div>
+      <p className="font-mono text-xs uppercase tracking-[0.2em] text-emerald-300">
+        Reviewable drafts
+      </p>
+      <h1 className="mt-3 text-3xl font-semibold tracking-tight">
+        Review before Notion sees it.
+      </h1>
+      <p className="mt-3 max-w-2xl text-sm leading-6 text-stone-400">
+        Drafts come from cited answers. Editing stays in the app; publishing
+        needs a separate confirmation and creates a new page only.
+      </p>
+      {error === null ? null : (
+        <div
+          className="mt-5 rounded-xl bg-rose-400/10 px-4 py-3 text-sm text-rose-200"
+          role="alert"
+        >
+          {error}
+        </div>
+      )}
+      {loading ? (
+        <StatusMessage>Loading drafts…</StatusMessage>
+      ) : drafts.length === 0 ? (
+        <Notice title="No drafts yet">
+          Use Create draft on a cited assistant answer in live chat.
+        </Notice>
+      ) : (
+        <div className="mt-6 grid gap-5 lg:grid-cols-[13rem_minmax(0,1fr)]">
+          <div className="space-y-2">
+            {drafts.map((draft) => (
+              <button
+                className={`w-full rounded-xl border px-3 py-3 text-left text-sm ${selected?.id === draft.id ? "border-emerald-300/60 bg-emerald-300/10" : "border-white/10"}`}
+                key={draft.id}
+                onClick={() => setSelected(draft)}
+                type="button"
+              >
+                <span className="block truncate font-semibold">
+                  {draft.title}
+                </span>
+                <span className="mt-1 block text-xs text-stone-500">
+                  {draft.status} · v{draft.version}
+                </span>
+              </button>
+            ))}
+          </div>
+          {selected === null ? null : (
+            <article className="rounded-2xl border border-white/10 bg-white/[0.025] p-5">
+              <label className="text-xs text-stone-500" htmlFor="draft-title">
+                Title
+              </label>
+              <input
+                className="mt-2 w-full rounded-xl border border-white/10 bg-black/20 p-3 font-semibold outline-none"
+                disabled={selected.status !== "pending"}
+                id="draft-title"
+                maxLength={200}
+                onChange={(event) =>
+                  setSelected({ ...selected, title: event.target.value })
+                }
+                value={selected.title}
+              />
+              <label
+                className="mt-5 block text-xs text-stone-500"
+                htmlFor="draft-content"
+              >
+                Owner-reviewed Markdown
+              </label>
+              <textarea
+                className="mt-2 min-h-72 w-full rounded-xl border border-white/10 bg-black/20 p-3 text-sm leading-6 outline-none"
+                disabled={selected.status !== "pending"}
+                id="draft-content"
+                maxLength={20000}
+                onChange={(event) =>
+                  setSelected({
+                    ...selected,
+                    contentMarkdown: event.target.value,
+                  })
+                }
+                value={selected.contentMarkdown}
+              />
+              <p className="mt-4 text-xs text-stone-500">
+                Frozen sources:{" "}
+                {selected.sources.map((source) => source.title).join(", ")}
+              </p>
+              {selected.notionUrl === null ? null : (
+                <a
+                  className="mt-3 inline-block text-sm font-semibold text-emerald-200 hover:underline"
+                  href={selected.notionUrl}
+                  rel="noopener noreferrer"
+                  target="_blank"
+                >
+                  Open published Notion page
+                </a>
+              )}
+              {selected.status === "pending" ? (
+                <div className="mt-5 flex flex-wrap gap-3">
+                  <button
+                    className="rounded-xl border border-white/10 px-4 py-2 text-sm"
+                    disabled={saving}
+                    onClick={() => void act("save")}
+                    type="button"
+                  >
+                    Save review
+                  </button>
+                  <button
+                    className="rounded-xl bg-emerald-300 px-4 py-2 text-sm font-bold text-emerald-950"
+                    disabled={saving}
+                    onClick={() => void act("publish")}
+                    type="button"
+                  >
+                    {saving ? "Working…" : "Publish to Notion"}
+                  </button>
+                  <button
+                    className="rounded-xl px-4 py-2 text-sm text-rose-200"
+                    disabled={saving}
+                    onClick={() => void act("discard")}
+                    type="button"
+                  >
+                    Discard
+                  </button>
+                </div>
+              ) : null}
+            </article>
+          )}
+        </div>
+      )}
     </div>
   );
 }
@@ -1050,11 +1300,15 @@ function EmptyState({ onSelect }: { onSelect: (prompt: string) => void }) {
 }
 
 function MessageCard({
+  drafting = false,
   live = false,
   message,
+  onCreateDraft,
 }: {
+  drafting?: boolean;
   live?: boolean;
   message: ChatMessage;
+  onCreateDraft?: (messageId: string) => void;
 }) {
   if (message.role === "user") {
     return (
@@ -1114,6 +1368,16 @@ function MessageCard({
             </section>
           ))}
         </div>
+      ) : null}
+      {live && message.citations.length > 0 && onCreateDraft !== undefined ? (
+        <button
+          className="mt-4 rounded-xl border border-emerald-300/30 px-3 py-2 text-sm font-semibold text-emerald-200 disabled:opacity-40"
+          disabled={drafting}
+          onClick={() => onCreateDraft(message.id)}
+          type="button"
+        >
+          {drafting ? "Creating draft…" : "Create draft"}
+        </button>
       ) : null}
       {message.unansweredQuestions.length > 0 ? (
         <div className="mt-4 rounded-xl bg-amber-300/[0.06] px-4 py-3">

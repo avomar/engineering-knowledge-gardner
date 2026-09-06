@@ -2,7 +2,7 @@
 
 Engineering Knowledge Gardener is a private, source-grounded assistant for engineering documentation. It is designed to answer questions with citations, identify reviewable documentation-health signals, and prepare drafts that are published only after explicit approval.
 
-The repository implements **Phase 3**. The public-safe demo retains deterministic fixture chat. Private live mode reads a deliberately shared Notion hierarchy through a manually triggered Cloudflare Workflow, embeds bounded chunks with Workers AI, stores semantic candidates in a private Vectorize namespace, and provides a grounded chat UI behind Cloudflare Access. D1 remains the authoritative source for text, source eligibility, citations, and conversation history; the app never writes to Notion.
+The repository implements **Phase 4**. The public-safe demo retains deterministic fixture chat. Private live mode reads a deliberately shared Notion hierarchy through a manually triggered Cloudflare Workflow, embeds bounded chunks with Workers AI, stores semantic candidates in a private Vectorize namespace, and provides a grounded chat UI behind Cloudflare Access. D1 remains the authoritative source for text, source eligibility, citations, conversation history, draft revisions, and publication leases. A live owner may turn a cited answer into an editable draft and explicitly create one new Notion page in a fixed, excluded `AI Drafts` parent.
 
 ## Architecture
 
@@ -141,8 +141,15 @@ The browser creates an anonymous demo session UUID in local storage. It prevents
 | `GET /api/sync`                       | View live knowledge freshness and recent runs        |
 | `GET /api/sync/:id`                   | View a run and its per-document outcomes             |
 | `GET /api/documents/search`           | Browse indexed sources and freshness                 |
+| `POST /api/drafts`                    | Generate an editable draft from a cited answer       |
+| `GET /api/drafts`                     | List session-owned drafts                            |
+| `PATCH /api/drafts/:id`               | Save an owner-reviewed pending revision              |
+| `POST /api/drafts/:id/discard`        | Discard a pending revision                           |
+| `POST /api/drafts/:id/publish`        | Confirm creation of one new fixed-parent Notion page |
 
 Chat endpoints require an `X-Client-Session-Id` UUID. Questions are limited to 2,000 characters. AI-backed requests are limited to five per client session per minute; unsupported questions are refused without calling the model. The old `X-Demo-Session-Id` header remains accepted only for demo compatibility.
+
+Draft endpoints are live-only and use the same session boundary. A draft may originate only from a cited assistant message belonging to that session. Source snapshots cannot be edited; title, Markdown, and assumptions can. Publishing requires `{ "confirmed": true }` and the current revision number. If a Notion create result is ambiguous, the Worker records an `uncertain` state and checks the stable page marker before any future create attempt; it never blindly retries an external write.
 
 ## Configuration and future bindings
 
@@ -155,7 +162,7 @@ Phase 1 activates:
 | `CHAT_RATE_LIMITER` | Coarse per-session AI request limit |
 | `APP_MODE`          | `demo` or `live` runtime mode       |
 
-Phase 2 activates `KNOWLEDGE_SYNC` and live-only `NOTION_TOKEN` and `NOTION_ROOT_PAGE_ID` values. Phase 3 adds a live-only `KNOWLEDGE_INDEX` Vectorize binding. The browser never receives any of these values.
+Phase 2 activates `KNOWLEDGE_SYNC` and live-only `NOTION_TOKEN` and `NOTION_ROOT_PAGE_ID` values. Phase 3 adds a live-only `KNOWLEDGE_INDEX` Vectorize binding. Phase 4 adds `NOTION_DRAFTS_PARENT_ID`, a direct child of the configured root. The browser never receives any of these values.
 
 ## Deployment
 
@@ -168,10 +175,11 @@ yarn workspace @knowledge-gardener/worker exec wrangler vectorize create enginee
 yarn workspace @knowledge-gardener/worker exec wrangler d1 migrations apply DB --remote --env live
 yarn workspace @knowledge-gardener/worker exec wrangler secret put NOTION_TOKEN --env live
 yarn workspace @knowledge-gardener/worker exec wrangler secret put NOTION_ROOT_PAGE_ID --env live
+yarn workspace @knowledge-gardener/worker exec wrangler secret put NOTION_DRAFTS_PARENT_ID --env live
 yarn deploy:live
 ```
 
-Do not clear the existing live D1 database. After deployment, start one sync so existing Phase 2 chunks are backfilled with 384-dimension vectors. Vectorize updates are eventually consistent: lexical D1 search provides immediate coverage while semantic candidates become visible. The live Chat tab becomes ready after the configured root has eligible chunks.
+Do not clear the existing live D1 database. Before the Phase 4 deployment, manually create a normal **AI Drafts** page directly beneath the shared knowledge root, share it with the same internal connection, and grant that connection content-insert capability. Set its ID as `NOTION_DRAFTS_PARENT_ID`. Its subtree is deliberately excluded from synchronization, so generated drafts never become evidence for later answers. After deployment, start one sync so existing Phase 2 chunks are backfilled with 384-dimension vectors. Vectorize updates are eventually consistent: lexical D1 search provides immediate coverage while semantic candidates become visible. The live Chat tab becomes ready after the configured root has eligible chunks.
 
 Open the resulting Worker URL and check `/api/health`. When the SPA and API work, go to **Workers & Pages → engineering-knowledge-gardener-api-live → Access**, protect **All traffic**, and allow only the owner's Cloudflare account or chosen identity. Access is configured manually because it belongs to the account's Zero Trust policy, not the application repository. The same-origin deployment lets its browser session authenticate both navigation and `/api/*` calls.
 
@@ -190,5 +198,5 @@ Open the resulting Worker URL and check `/api/health`. When the SPA and API work
 3. **Live Notion synchronization** — complete; scoped reads, database rows, freshness, and a manual Workflow.
 4. **Unified SPA/API deployment** — complete; one Worker origin, Static Assets, and Access-ready routing.
 5. **Hybrid retrieval and live chat** — complete; Vectorize, D1 FTS, citation validation, and Access-ready chat.
-6. **Safe draft publishing** — editable drafts, approval, fixed parent, and idempotency.
+6. **Safe draft publishing** — complete; cited-answer drafts, owner edits, fixed-parent page creation, audit events, and recovery-first idempotency.
 7. **Garden and submission polish** — review suggestions, feedback, and hardening.

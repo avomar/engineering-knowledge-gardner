@@ -93,6 +93,51 @@ describe("Notion source", () => {
     expect(calledWithGlobalReceiver).toBe(true);
   });
 
+  it("creates a complete Markdown page with no blind create retry", async () => {
+    const requests: Request[] = [];
+    const client = new NotionClient("token", {
+      wait: async () => undefined,
+      fetcher: async (input, init) => {
+        requests.push(new Request(input, init));
+        return Response.json(page(ids.child, "Published note"));
+      },
+    });
+    await client.createPage(ids.root, "Published note", "## Body");
+    expect(requests).toHaveLength(1);
+    expect(await requests[0]?.json()).toMatchObject({
+      parent: { page_id: ids.root },
+      markdown: "## Body",
+    });
+  });
+
+  it("does not traverse the excluded drafts parent or its children", async () => {
+    const calls: string[] = [];
+    const client = new NotionClient("token", {
+      wait: async () => undefined,
+      fetcher: async (input) => {
+        const path = new URL(String(input)).pathname;
+        calls.push(path);
+        if (path.endsWith(`/pages/${ids.root}`))
+          return Response.json(page(ids.root, "Engineering"));
+        if (path.endsWith(`/blocks/${ids.root}/children`))
+          return Response.json(
+            list([block(ids.child, "child_page", { title: "AI Drafts" })]),
+          );
+        throw new Error(`Excluded page should not be requested: ${path}`);
+      },
+    });
+    const result = await discoverNotionDocuments(
+      client,
+      ids.root,
+      51,
+      ids.child,
+    );
+    expect(result.documents.map((document) => document.sourcePageId)).toEqual([
+      ids.root,
+    ]);
+    expect(calls.some((path) => path.includes(ids.child))).toBe(false);
+  });
+
   it("discovers the root, child pages, and descendant database rows", async () => {
     const calls: string[] = [];
     const client = new NotionClient("token", {

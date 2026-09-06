@@ -90,7 +90,20 @@ export async function synchronize(env: Env, params: SyncWorkflowParams) {
   const client = new NotionClient(env.NOTION_TOKEN, {
     log: (record) => console.log(JSON.stringify(record)),
   });
-  const discovery = await discoverNotionDocuments(client, params.rootId, 51);
+  const excluded = env.NOTION_DRAFTS_PARENT_ID
+    ? normalizeNotionId(env.NOTION_DRAFTS_PARENT_ID)
+    : undefined;
+  if (excluded === normalizeNotionId(params.rootId)) {
+    throw new NonRetryableError(
+      "The drafts parent cannot be the Notion source root.",
+    );
+  }
+  const discovery = await discoverNotionDocuments(
+    client,
+    params.rootId,
+    51,
+    excluded,
+  );
   const selected = discovery.documents.slice(0, 50);
   const discoveryComplete =
     discovery.complete && discovery.documents.length <= 50;

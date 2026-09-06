@@ -444,7 +444,7 @@ The UI exposes run status and actionable errors; the repository documents where 
 
 ### Phase 4 — Safe Notion draft publishing
 
-**Deliverable:** Draft generation, editable preview, fixed-parent publication, audit events, and idempotency protection.
+**Deliverable:** Complete. Draft generation from cited assistant answers, editable owner review, fixed-parent publication, immutable provenance, audit events, synchronization exclusion, and recovery-first idempotency protection.
 
 **Acceptance criteria:**
 
@@ -453,6 +453,7 @@ The UI exposes run status and actionable errors; the repository documents where 
 - Every write goes to `NOTION_DRAFTS_PARENT_ID`.
 - Retried publish requests do not duplicate pages.
 - Created pages link back to source documents used for the draft.
+- The `AI Drafts` parent must be a direct child of the source root and its subtree is never indexed.
 
 ### Phase 5 — Garden findings, hardening, and submission polish
 

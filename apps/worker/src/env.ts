@@ -10,5 +10,6 @@ export interface Env {
   KNOWLEDGE_SYNC?: Workflow<SyncWorkflowParams>;
   NOTION_TOKEN?: string;
   NOTION_ROOT_PAGE_ID?: string;
+  NOTION_DRAFTS_PARENT_ID?: string;
   KNOWLEDGE_INDEX?: VectorizeIndex;
 }

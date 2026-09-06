@@ -3,12 +3,18 @@ import {
   chatRequestSchema,
   conversationMessagesResponseSchema,
   documentSearchResponseSchema,
+  createDraftRequestSchema,
+  draftListResponseSchema,
+  draftSchema,
   healthResponseSchema,
   idSchema,
   indexStatusSchema,
   syncDetailResponseSchema,
   syncOverviewResponseSchema,
   syncStartResponseSchema,
+  updateDraftRequestSchema,
+  versionedDraftRequestSchema,
+  publishDraftRequestSchema,
   type ApiErrorCode,
   type HealthResponse,
 } from "@knowledge-gardener/domain";
@@ -20,12 +26,15 @@ import {
 } from "./answer-generator";
 import { ChatService, ChatServiceError, parseSessionId } from "./chat-service";
 import { DemoCorpusService } from "./demo-corpus";
+import { DraftService, DraftServiceError } from "./draft-service";
+import type { DraftGenerator } from "./draft-generator";
 import type { Env } from "./env";
 import { optionalRoot, SyncService, SyncServiceError } from "./sync-service";
 import { SyncRepository } from "./sync-repository";
 
 interface AppOptions {
   createAnswerGenerator?: (environment: Env) => AnswerGenerator;
+  createDraftGenerator?: (environment: Env) => DraftGenerator;
   now?: () => string;
   createId?: () => string;
   log?: (record: Record<string, unknown>) => void;
@@ -56,6 +65,11 @@ export function createApp(options: AppOptions = {}) {
             ? {
                 semanticIndex:
                   context.env.KNOWLEDGE_INDEX === undefined ? "error" : "ok",
+                draftPublishing:
+                  context.env.NOTION_TOKEN === undefined ||
+                  context.env.NOTION_DRAFTS_PARENT_ID === undefined
+                    ? "error"
+                    : "ok",
               }
             : {}),
         },
@@ -71,6 +85,9 @@ export function createApp(options: AppOptions = {}) {
             context.env.APP_MODE === "live" ? "error" : "not_applicable",
           ...(context.env.APP_MODE === "live"
             ? { semanticIndex: "error" }
+            : {}),
+          ...(context.env.APP_MODE === "live"
+            ? { draftPublishing: "error" }
             : {}),
         },
       };
@@ -283,6 +300,198 @@ export function createApp(options: AppOptions = {}) {
     }
   });
 
+  api.post("/drafts", async (context) => {
+    const sessionId = liveSession(context);
+    if (sessionId === null)
+      return validationError(context, "A valid client session ID is required.");
+    if (context.env.APP_MODE !== "live") return modeUnavailable(context);
+    let input: unknown;
+    try {
+      input = await context.req.json();
+    } catch {
+      return validationError(context, "The request body must be valid JSON.");
+    }
+    if (!createDraftRequestSchema.safeParse(input).success)
+      return validationError(
+        context,
+        "Draft source and instruction are invalid.",
+      );
+    try {
+      return context.json(
+        draftSchema.parse(
+          await createDraftService(context.env, options).generate(
+            sessionId,
+            input,
+          ),
+        ),
+        201,
+      );
+    } catch (error) {
+      return handleDraftError(context, error);
+    }
+  });
+
+  api.get("/drafts", async (context) => {
+    const sessionId = liveSession(context);
+    if (sessionId === null)
+      return validationError(context, "A valid client session ID is required.");
+    if (context.env.APP_MODE !== "live") return modeUnavailable(context);
+    const cursor = context.req.query("cursor") ?? "0";
+    const limit = context.req.query("limit") ?? "20";
+    const status = context.req.query("status");
+    if (
+      !/^\d+$/u.test(cursor) ||
+      !/^\d+$/u.test(limit) ||
+      Number(limit) < 1 ||
+      Number(limit) > 50 ||
+      (status !== undefined &&
+        !["pending", "published", "discarded", "failed"].includes(status))
+    )
+      return validationError(context, "Draft listing parameters are invalid.");
+    try {
+      return context.json(
+        draftListResponseSchema.parse(
+          await createDraftService(context.env, options).list(
+            sessionId,
+            Number(cursor),
+            Number(limit),
+            status,
+          ),
+        ),
+        200,
+      );
+    } catch (error) {
+      return handleDraftError(context, error);
+    }
+  });
+
+  api.get("/drafts/:draftId", async (context) => {
+    const sessionId = liveSession(context);
+    const id = idSchema.safeParse(context.req.param("draftId"));
+    if (sessionId === null || !id.success)
+      return validationError(
+        context,
+        "Valid session and draft IDs are required.",
+      );
+    if (context.env.APP_MODE !== "live") return modeUnavailable(context);
+    try {
+      return context.json(
+        draftSchema.parse(
+          await createDraftService(context.env, options).get(
+            sessionId,
+            id.data,
+          ),
+        ),
+        200,
+      );
+    } catch (error) {
+      return handleDraftError(context, error);
+    }
+  });
+
+  api.patch("/drafts/:draftId", async (context) => {
+    const sessionId = liveSession(context);
+    const id = idSchema.safeParse(context.req.param("draftId"));
+    if (sessionId === null || !id.success)
+      return validationError(
+        context,
+        "Valid session and draft IDs are required.",
+      );
+    if (context.env.APP_MODE !== "live") return modeUnavailable(context);
+    let input: unknown;
+    try {
+      input = await context.req.json();
+    } catch {
+      return validationError(context, "The request body must be valid JSON.");
+    }
+    const parsed = updateDraftRequestSchema.safeParse(input);
+    if (!parsed.success)
+      return validationError(context, "Draft edits are invalid.");
+    try {
+      return context.json(
+        draftSchema.parse(
+          await createDraftService(context.env, options).edit(
+            sessionId,
+            id.data,
+            parsed.data,
+          ),
+        ),
+        200,
+      );
+    } catch (error) {
+      return handleDraftError(context, error);
+    }
+  });
+
+  api.post("/drafts/:draftId/discard", async (context) => {
+    const sessionId = liveSession(context);
+    const id = idSchema.safeParse(context.req.param("draftId"));
+    if (sessionId === null || !id.success)
+      return validationError(
+        context,
+        "Valid session and draft IDs are required.",
+      );
+    if (context.env.APP_MODE !== "live") return modeUnavailable(context);
+    let input: unknown;
+    try {
+      input = await context.req.json();
+    } catch {
+      return validationError(context, "The request body must be valid JSON.");
+    }
+    const parsed = versionedDraftRequestSchema.safeParse(input);
+    if (!parsed.success)
+      return validationError(context, "A draft version is required.");
+    try {
+      return context.json(
+        draftSchema.parse(
+          await createDraftService(context.env, options).discard(
+            sessionId,
+            id.data,
+            parsed.data.version,
+          ),
+        ),
+        200,
+      );
+    } catch (error) {
+      return handleDraftError(context, error);
+    }
+  });
+
+  api.post("/drafts/:draftId/publish", async (context) => {
+    const sessionId = liveSession(context);
+    const id = idSchema.safeParse(context.req.param("draftId"));
+    if (sessionId === null || !id.success)
+      return validationError(
+        context,
+        "Valid session and draft IDs are required.",
+      );
+    if (context.env.APP_MODE !== "live") return modeUnavailable(context);
+    let input: unknown;
+    try {
+      input = await context.req.json();
+    } catch {
+      return validationError(context, "The request body must be valid JSON.");
+    }
+    const parsed = publishDraftRequestSchema.safeParse(input);
+    if (!parsed.success)
+      return validationError(
+        context,
+        "Explicit publish confirmation and a draft version are required.",
+      );
+    try {
+      return context.json(
+        await createDraftService(context.env, options).publish(
+          sessionId,
+          id.data,
+          parsed.data.version,
+        ),
+        200,
+      );
+    } catch (error) {
+      return handleDraftError(context, error);
+    }
+  });
+
   app.route("/api", api);
   app.notFound((context) =>
     errorResponse(context, "not_found", "Not found.", false, 404),
@@ -313,6 +522,65 @@ function createChatService(environment: Env, options: AppOptions): ChatService {
     ...(options.createId === undefined ? {} : { createId: options.createId }),
     log,
   });
+}
+
+function createDraftService(
+  environment: Env,
+  options: AppOptions,
+): DraftService {
+  return new DraftService(environment, {
+    ...(options.createDraftGenerator === undefined
+      ? {}
+      : { generator: options.createDraftGenerator(environment) }),
+    ...(options.now === undefined ? {} : { now: options.now }),
+    ...(options.createId === undefined ? {} : { createId: options.createId }),
+  });
+}
+
+function liveSession(context: Context): string | null {
+  return parseSessionId(context.req.header("X-Client-Session-Id"));
+}
+function modeUnavailable(context: Context) {
+  return errorResponse(
+    context,
+    "mode_unavailable",
+    "Draft publishing is available only in live mode.",
+    false,
+    503,
+  );
+}
+function handleDraftError(context: Context, error: unknown) {
+  if (!(error instanceof DraftServiceError))
+    return errorResponse(
+      context,
+      "database_unavailable",
+      "Drafts are temporarily unavailable.",
+      true,
+      503,
+    );
+  const status = (
+    {
+      draft_not_found: 404,
+      draft_source_unavailable: 409,
+      draft_conflict: 409,
+      draft_not_publishable: 409,
+      draft_publish_in_progress: 409,
+      draft_publish_uncertain: 409,
+      draft_generation_unavailable: 503,
+      notion_write_unavailable: 503,
+      rate_limited: 429,
+      knowledge_not_ready: 409,
+      source_configuration_error: 503,
+    } as const
+  )[error.code];
+  if (error.code === "rate_limited") context.header("Retry-After", "60");
+  return errorResponse(
+    context,
+    error.code,
+    error.message,
+    error.retryable,
+    status,
+  );
 }
 
 function handleChatError(context: Context, error: unknown) {

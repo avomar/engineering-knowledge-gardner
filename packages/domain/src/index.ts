@@ -23,6 +23,13 @@ export const draftStatusSchema = z.enum([
   "discarded",
   "failed",
 ]);
+export const draftPublishStateSchema = z.enum([
+  "idle",
+  "publishing",
+  "uncertain",
+  "failed",
+  "published",
+]);
 
 export const idSchema = z.string().uuid();
 export const isoDateTimeSchema = z.string().datetime({ offset: true });
@@ -51,6 +58,7 @@ export const healthResponseSchema = z.object({
     database: z.enum(["ok", "error"]),
     sourceConfiguration: z.enum(["ok", "error", "not_applicable"]).optional(),
     semanticIndex: z.enum(["ok", "error", "not_applicable"]).optional(),
+    draftPublishing: z.enum(["ok", "error", "not_applicable"]).optional(),
   }),
 });
 
@@ -298,6 +306,14 @@ export const apiErrorCodeSchema = z.enum([
   "sync_not_found",
   "invalid_cursor",
   "not_found",
+  "draft_not_found",
+  "draft_source_unavailable",
+  "draft_conflict",
+  "draft_not_publishable",
+  "draft_publish_in_progress",
+  "draft_publish_uncertain",
+  "draft_generation_unavailable",
+  "notion_write_unavailable",
 ]);
 
 export const apiErrorResponseSchema = z.object({
@@ -308,21 +324,70 @@ export const apiErrorResponseSchema = z.object({
   }),
 });
 
+export const draftSourceSchema = z.object({
+  chunkId: idSchema,
+  documentId: idSchema,
+  sourcePageId: z.string().trim().min(1).max(500),
+  title: z.string().trim().min(1).max(500),
+  breadcrumb: z.array(z.string().trim().min(1).max(500)),
+  sourceUrl: z.string().url(),
+  quote: z.string().trim().min(1).max(1_000),
+  sourceState: z.enum(["current", "stale"]),
+  lastSyncedAt: nullableIsoDateTimeSchema,
+  checksum: z.string().trim().min(1).max(128),
+});
+
 export const draftSchema = z.object({
   id: idSchema,
   knowledgeSpaceId: idSchema,
-  title: z.string().trim().min(1).max(500),
+  ownerSessionId: z.string().trim().min(1).max(500),
+  sourceMessageId: idSchema,
+  generationInstruction: z.string().max(1_000).nullable(),
+  title: z.string().trim().min(1).max(200),
   contentMarkdown: z.string().max(20_000),
-  sources: z.array(idSchema),
-  assumptions: z.array(z.string().trim().min(1).max(1_000)),
-  targetParentId: z.string().trim().min(1).max(500).nullable(),
+  sources: z.array(draftSourceSchema).min(1).max(6),
+  assumptions: z.array(z.string().trim().min(1).max(1_000)).max(10),
+  targetParentId: z.string().trim().min(1).max(500),
   status: draftStatusSchema,
-  idempotencyKey: z.string().trim().min(1).max(500).nullable(),
+  version: z.number().int().positive(),
+  wasEdited: z.boolean(),
+  publishState: draftPublishStateSchema,
+  publishAttemptCount: z.number().int().nonnegative(),
+  publishStartedAt: nullableIsoDateTimeSchema,
+  publishLeaseExpiresAt: nullableIsoDateTimeSchema,
+  lastErrorCode: z.string().trim().min(1).max(100).nullable(),
+  lastErrorMessage: z.string().trim().min(1).max(500).nullable(),
+  idempotencyKey: z.string().trim().min(1).max(500),
   notionPageId: z.string().trim().min(1).max(500).nullable(),
   notionUrl: z.string().url().nullable(),
   createdAt: isoDateTimeSchema,
   updatedAt: isoDateTimeSchema,
   publishedAt: nullableIsoDateTimeSchema,
+});
+
+export const createDraftRequestSchema = z.object({
+  sourceMessageId: idSchema,
+  instruction: z.string().trim().min(1).max(1_000).optional(),
+});
+export const updateDraftRequestSchema = z.object({
+  title: z.string().trim().min(1).max(200),
+  contentMarkdown: z.string().max(20_000),
+  assumptions: z.array(z.string().trim().min(1).max(1_000)).max(10),
+  version: z.number().int().positive(),
+});
+export const versionedDraftRequestSchema = z.object({
+  version: z.number().int().positive(),
+});
+export const publishDraftRequestSchema = versionedDraftRequestSchema.extend({
+  confirmed: z.literal(true),
+});
+export const draftListResponseSchema = z.object({
+  items: z.array(draftSchema).max(50),
+  nextCursor: z.string().regex(/^\d+$/u).nullable(),
+});
+export const publishDraftResponseSchema = z.object({
+  draft: draftSchema,
+  reused: z.boolean(),
 });
 
 export const auditEventSchema = z.object({
@@ -359,6 +424,7 @@ export type KnowledgeFreshness = z.infer<typeof knowledgeFreshnessSchema>;
 export type MessageRole = z.infer<typeof messageRoleSchema>;
 export type Confidence = z.infer<typeof confidenceSchema>;
 export type DraftStatus = z.infer<typeof draftStatusSchema>;
+export type DraftPublishState = z.infer<typeof draftPublishStateSchema>;
 export type HealthResponse = z.infer<typeof healthResponseSchema>;
 export type KnowledgeSpace = z.infer<typeof knowledgeSpaceSchema>;
 export type Document = z.infer<typeof documentSchema>;
@@ -387,5 +453,6 @@ export type ConversationMessagesResponse = z.infer<
 export type ApiErrorCode = z.infer<typeof apiErrorCodeSchema>;
 export type ApiErrorResponse = z.infer<typeof apiErrorResponseSchema>;
 export type Draft = z.infer<typeof draftSchema>;
+export type DraftSource = z.infer<typeof draftSourceSchema>;
 export type AuditEvent = z.infer<typeof auditEventSchema>;
 export type Feedback = z.infer<typeof feedbackSchema>;

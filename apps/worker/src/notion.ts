@@ -113,6 +113,49 @@ export class NotionClient {
     );
   }
 
+  async createPage(
+    parentId: string,
+    title: string,
+    markdown: string,
+  ): Promise<NotionPage> {
+    return pageSchema.parse(
+      await this.request(
+        "/pages",
+        {
+          method: "POST",
+          body: JSON.stringify({
+            parent: { page_id: parentId },
+            properties: {
+              title: {
+                title: [{ type: "text", text: { content: title } }],
+              },
+            },
+            markdown,
+          }),
+        },
+        false,
+      ),
+    );
+  }
+
+  async findDirectChildByMarker(
+    parentId: string,
+    marker: string,
+  ): Promise<NotionPage | null> {
+    const children = await this.listBlockChildren(parentId);
+    for (const child of children) {
+      const childPage = child.child_page;
+      const title =
+        childPage !== null && typeof childPage === "object"
+          ? (childPage as Record<string, unknown>).title
+          : undefined;
+      if (typeof title !== "string" || !title.includes(marker)) continue;
+      const page = await this.retrievePage(child.id);
+      if (!page.in_trash) return page;
+    }
+    return null;
+  }
+
   async listBlockChildren(blockId: string): Promise<NotionBlock[]> {
     const results: NotionBlock[] = [];
     let cursor: string | null = null;
@@ -176,8 +219,10 @@ export class NotionClient {
   private async request(
     path: string,
     init: RequestInit = {},
+    retry = true,
   ): Promise<unknown> {
-    for (let attempt = 1; attempt <= 3; attempt += 1) {
+    const attempts = retry ? 3 : 1;
+    for (let attempt = 1; attempt <= attempts; attempt += 1) {
       const elapsed = Date.now() - this.lastRequestAt;
       if (elapsed < 350) await this.wait(350 - elapsed);
       this.lastRequestAt = Date.now();
@@ -199,7 +244,7 @@ export class NotionClient {
           attempt,
           ...safeFetchError(error),
         });
-        if (attempt < 3) {
+        if (attempt < attempts) {
           await this.retryDelay(attempt, null);
           continue;
         }
@@ -228,7 +273,7 @@ export class NotionClient {
         response.status,
       );
       const retryAfter = parseRetryAfter(response.headers.get("Retry-After"));
-      if (retryable && attempt < 3) {
+      if (retryable && attempt < attempts) {
         this.log({ event: "notion.retry", status: response.status, attempt });
         await this.retryDelay(attempt, retryAfter);
         continue;
@@ -322,8 +367,13 @@ export async function discoverNotionDocuments(
   client: NotionClient,
   rootId: string,
   limit = 51,
+  excludedPageId?: string,
 ): Promise<DiscoveryResult> {
   const normalizedRoot = normalizeNotionId(rootId);
+  const excluded =
+    excludedPageId === undefined
+      ? undefined
+      : normalizeNotionId(excludedPageId);
   const pages: QueuePage[] = [
     { id: normalizedRoot, breadcrumb: [], parentPageId: null },
   ];
@@ -340,6 +390,7 @@ export async function discoverNotionDocuments(
   ) {
     const queued = pages.shift();
     if (queued !== undefined) {
+      if (queued.id === excluded) continue;
       try {
         const page = await client.retrievePage(queued.id);
         if (page.in_trash) {
@@ -389,6 +440,7 @@ export async function discoverNotionDocuments(
           pages,
           databases,
           queuedPages,
+          excluded,
         );
       } catch (error) {
         if (queued.id === normalizedRoot) throw error;
@@ -432,7 +484,7 @@ export async function discoverNotionDocuments(
         if (entry.object === "page") {
           const parsed = pageSchema.parse(entry);
           const id = normalizeNotionId(parsed.id);
-          if (!queuedPages.has(id) && !parsed.in_trash) {
+          if (!queuedPages.has(id) && id !== excluded && !parsed.in_trash) {
             queuedPages.add(id);
             pages.push({
               id,
@@ -449,7 +501,7 @@ export async function discoverNotionDocuments(
               if (item.object !== "page") continue;
               const parsed = pageSchema.parse(item);
               const id = normalizeNotionId(parsed.id);
-              if (!queuedPages.has(id) && !parsed.in_trash) {
+              if (!queuedPages.has(id) && id !== excluded && !parsed.in_trash) {
                 queuedPages.add(id);
                 pages.push({
                   id,
@@ -500,11 +552,12 @@ function collectChildren(
   pages: QueuePage[],
   databases: QueueDatabase[],
   queuedPages: Set<string>,
+  excludedPageId?: string,
 ) {
   for (const block of trees) {
     if (block.type === "child_page") {
       const id = normalizeNotionId(block.id);
-      if (!queuedPages.has(id)) {
+      if (!queuedPages.has(id) && id !== excludedPageId) {
         queuedPages.add(id);
         const titleHint = asRecord(block.child_page).title;
         pages.push({
@@ -528,6 +581,7 @@ function collectChildren(
       pages,
       databases,
       queuedPages,
+      excludedPageId,
     );
   }
 }

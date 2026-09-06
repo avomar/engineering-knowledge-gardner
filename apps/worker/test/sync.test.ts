@@ -33,6 +33,7 @@ beforeAll(async () => {
     "0002_chat_answer_metadata.sql",
     "0003_live_notion_sync.sql",
     "0004_hybrid_retrieval.sql",
+    "0005_safe_draft_publishing.sql",
   ]) {
     const sql = await readFile(
       path.join(directory, "../migrations", filename),

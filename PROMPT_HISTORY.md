@@ -346,3 +346,39 @@ This file records substantive prompts used while planning, designing, or coding 
 ## 44 — 2026-09-06 (Asia/Kolkata)
 
 > The 6th browser test failed, isn't it?
+
+## 45 — 2026-09-06 (Asia/Kolkata)
+
+> What new feature will phase 4 implement? What additional functionality will be gained?
+
+## 46 — 2026-09-06 (Asia/Kolkata)
+
+> If the answer is cited from existing pages, what new information will be there in new draft page?
+
+## 47 — 2026-09-06 (Asia/Kolkata)
+
+> If I skip phase 4, what is remaining to implement in phase 5 directly as both worker and pages are deployed and live?
+
+## 48 — 2026-09-06 (Asia/Kolkata)
+
+> Write these prompts to [@PROMPT_HISTORY.md](file:///home/avomar/personal/cloudflare-agent/PROMPT_HISTORY.md)
+
+## 49 — 2026-09-06 (Asia/Kolkata)
+
+> Create a comprehensive plan for phase 4. Remember to write the actual plan document and any ADR first.
+
+## 50 — 2026-09-06 (Asia/Kolkata)
+
+> Only write the plan file and any ADR.
+
+## 51 — 2026-09-06 (Asia/Kolkata)
+
+> Update prompt history as well.
+
+## 52 — 2026-09-06 (Asia/Kolkata)
+
+> Implement phase 4 and then let me know about any manual steps that need to be taken.
+
+## 53 — 2026-09-06 (Asia/Kolkata)
+
+> Commit and push phase 4.

@@ -33,6 +33,7 @@ beforeAll(async () => {
       "0002_chat_answer_metadata.sql",
       "0003_live_notion_sync.sql",
       "0004_hybrid_retrieval.sql",
+      "0005_safe_draft_publishing.sql",
     ].map((filename) =>
       readFile(path.join(directory, "../migrations", filename), "utf8"),
     ),
@@ -130,6 +131,21 @@ describe("D1 foundation", () => {
       .all<{ name: string }>();
     expect(tables.results.map(({ name }) => name)).toEqual(
       expect.arrayContaining(["vector_deletion_queue", "document_chunks_fts"]),
+    );
+  });
+
+  it("adds guarded draft publication state without replacing drafts", async () => {
+    const columns = await database
+      .prepare("PRAGMA table_info(drafts)")
+      .all<{ name: string }>();
+    expect(columns.results.map(({ name }) => name)).toEqual(
+      expect.arrayContaining([
+        "owner_session_id",
+        "source_message_id",
+        "version",
+        "publish_state",
+        "publish_lease_expires_at",
+      ]),
     );
   });
 
